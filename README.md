@@ -1,102 +1,98 @@
-﻿# QQBot — 通用 QQ 群 AI 机器人模板
+# Agent-for-qqbot 1.0
 
-> **v0.14.16** — Dashboard 运维重构 · NapCat 启动诊断 · 移动端适配
+原生 DSH + NapCat 的 QQ Agent：角色/行动协作、场景记忆、便签、原生 Web 与真实发送回执。
 
-解压即用。Python 3.12、Node.js、Live2D Electron 已内置离线包。
+> **1.0.0 是原生 DSH 架构迁移主线，尚未发布。** 旧 Hermes / 0.x 系列停止维护，历史 tag 不改写。
+> Windows / WSL 已通过独立实例安装、原生 Web 和双脑本地模型短回合验收；真实 NapCat→QQ 接入本轮跳过。
+> 不把旧版的验证记录当作 1.0 通过证明，也不将源码候选称为完整离线安装包。
 
-## 目录结构
+> **当前 GitHub 仅更新首页说明，1.0 源码尚未上传。** 公开代码的 `VERSION` 仍为旧版 `0.14.16`，该系列已停更。
+> 下文是 1.0 源码候选的入口与部署说明，**不能拿旧下载包按此安装 1.0**；尚无 1.0 tag、Release 或成品安装包。
 
-```
-bot-template/
-├─ install.bat / start.bat / Stop-All.bat / update.bat / 配置API.bat
-├─ README.md / LICENSE / VERSION / CHANGELOG.md / UPGRADE.md
-├─ hermes/          ← 引擎（核心代码）
-│   └─ core/        ← 引擎权威（含 OneBot 插件、记忆系统、80+ 工具）
-├─ templates/       ← 配置模板（根级）
-├─ modules/         ← 功能模块
-│   ├─ napcat/      ← NapCat QQ 协议桥
-│   ├─ live2d/      ← Live2D 桌面立绘（12 角色，CDN 下载模型）
-│   ├─ dashboard/   ← Web 控制面板
-│   └─ knowledge/   ← 知识库（Obsidian 文件夹）
-└─ extras/          ← 安装包 / 构建 / 运行时
-    ├─ node/        ← Node.js v22.11 内置包
-    ├─ scripts/     ← 辅助脚本（配置/升级/解密）
-    ├─ electron-offline.zip.*  ← Live2D Electron 离线包（分卷）
-    ├─ nodejs.zip / python-installer.exe  ← 离线安装包
-    └─ build-*.ps1 / build-*.iss  ← 发布构建脚本
-```
+仓库：<https://github.com/jixiong398-blip/Agent-for-qqbot>。
 
-## 部署流程
+**公开产品统称 Bot，不内置固定人物。** 角色名、别名、性格与背景由使用者自行填写；
+全部公开配置 / 人格示例集中在 `templates/`，旧模板路径只保留指引。模型、账号和凭据不从作者环境继承。
 
-```
-① 双击 install.bat        → 离线安装 Python + Node.js + Live2D + Hermes
-② 启动 NapCat 扫码登录     → modules\napcat\napcat.bat → 扫码登录 → WebUI 开启 WS/HTTP 端口
-③ 双击 配置API.bat          → 选供应商 + 填 API Key + 管理员 QQ（已登录账号自动发现）
-④ 准备角色灵魂              → 编辑 SOUL.md → 重跑 配置API.bat（角色名自动同步到 .env）
-⑤ 双击 start.bat           → Dashboard 启动，在“QQ 连接”中选择当前 NapCat 账号，再启动 Hermes 网关
-```
+## 新入口
 
-> **注意**：NapCat 必须手动扫码登录。Dashboard 会列出 NapCat 登录后生成的账号专属配置；选择后 Hermes 自动使用对应 OneBot token。当前默认一台机器一个 Hermes Bot 实例，多账号/多 NapCat 实例先保留为后续升级方向。以后更新只需 `update.bat`。
+| 操作 | Windows | Linux / WSL |
+|---|---|---|
+| 安装原生依赖 | `install.bat` | `sh install.sh` |
+| 配置模型 / QQ / 人格 | `配置API.bat`（本机 Web 向导） | `sh configure.sh`（命令行） |
+| 一键启动控制台、原生 Web（QQ 按配置开启） | `start.bat` | `sh start.sh` |
+| 停止本实例进程 | `Stop-All.bat` | `sh stop.sh` |
+| 安装当前源码的新运行时 | `update.bat` | `python3 extras/scripts/bootstrap.py update` |
 
-## 需要配置的内容
+这些入口现在都调用 `extras/scripts/bootstrap.py` → `soyo.app`；不启动旧 Hermes。
+安装/升级只构建并选择运行时，不自动启动 QQ，不覆盖另一个运行目录。
 
-| 配置项 | 在哪里填 | 说明 |
-|--------|----------|------|
-| LLM API Key | 配置API.bat | 支持 13 家供应商 |
-| 管理员 QQ | 配置API.bat | 能执行指令的人 |
-| 角色灵魂 | SOUL.md | 见下方说明 |
-| 视觉 API Key | 配置API.bat | 图片识别（可选，OpenCode Go 可复用 LLM Key） |
-| 思考强度 | 配置API.bat | off/minimal/low/medium/high/xhigh，影响回复质量与耗时（默认 medium） |
+## 前置条件
 
-## 创建角色灵魂（必须）
+- Python **3.12+**、Git、Node.js/npm；Node 要求 **22.19+ 的 22.x 或 24+**，以 `application.toml` 为准。
+- 固定 DSH fork 需要构建原生模块及 Web。Linux / WSL 需要 C/C++ 工具链（如 `build-essential`）及 Node 开发头文件；
+  官方 Node 完整发行包含头文件。Windows 优先使用依赖提供的预编译模块，缺少匹配版本时须准备其构建工具。
+- 完整源码构建建议至少 **8 GiB RAM + swap/pagefile 容量**；低于 6 GiB 会提前拒绝，避免编译器使小内存 WSL 退出。
+  这不包含本地大模型所需的显存/内存；模型与构建可分别进行。安装器不会擅改 WSL 配额或系统 swap。
+- 首装需要网络访问 Python/npm registry 与固定上游源码；**不再假称旧离线压缩包足够**。
+  已有旧版 portable Node 不满足最低版本时必须换用兼容版本。
+- **先体验 Web 不需要 NapCat 或 QQ。** 接入 QQ 时再独立安装 NapCat 并由用户扫码登录；登录信息不随源码打包。
+- Live2D 可选，需要 Electron 与桌面图形环境；无桌面的 Linux 不启动此模块。
 
-1. 阅读 `templates\SOUL-template.md` 参考格式
-2. 让 AI 基于模板写出你想要的角色
-3. 保存为 `templates\SOUL.md`
-4. 重跑 `配置API.bat`（或 `python extras\scripts\install.py`）→ 写入 `~\.hermes\SOUL.md` 并自动同步角色名到 .env
+可用 `AGENT_QQBOT_PYTHON`（POSIX wrapper）、`AGENT_QQBOT_NODE`、`AGENT_QQBOT_NPM`
+或私有 `executables` 指定工具位置。Windows wrapper 自动发现 Python；Node 优先使用系统 PATH。
 
-> 角色名参数化：`ONEBOT_BOT_NAME` 环境变量（env > config.yaml > 默认值），judge/recorder 自动跟随。
-> **身份装载（v0.14.13）**：SOUL.md 需含 `## 称呼` 节（正式名 + 别名列表），名字直呼（无 @）也能触发回复。
+## 配置与数据
 
-## 功能
+默认实例目录是用户主目录下的 `.agent-for-qqbot`；可通过 **`AGENT_QQBOT_HOME`** 覆盖。
+必须是源码目录以外、非链接的新私有目录，不能指向已有 Hermes home。
 
-| 功能 | 说明 |
-|------|------|
-| 语义判断 | 两级窗口判定（旁观 5s / 关注 1s），judge 提速 |
-| @ 软信号 | @ 进完整判定流程，被 @ 大概率回复但可合理判不回 |
-| 热回复缓存 | 命中时即时返回，显著提速（v0.14.12） |
-| poke 唤醒 | 群内 poke 触发唤醒 + 判定，进入对话态（v0.14.12） |
-| 名字直呼 | SOUL「称呼」节别名，无 @ 也能触发（v0.14.13） |
-| Episode State | 16 字段对话状态机，跨会话联想记忆（EPI） |
-| Live2D 立绘 | 12 位 Cubism 5 角色，右键菜单控制 |
-| 记忆系统 | STM / LTM / EPI / Workflow 多层记忆 |
-| 转发消息 | 嵌套递归展开、原位标注、500k 阈值 |
-| Dashboard | 服务状态卡片、日志流、记忆检索 |
+1. 安装后打开向导；默认本机直接进入，控制台与聊天**不再显示 Key 登录页**。
+   模型 API Key / OneBot Token 是独立配置，不受 UI 免 Key 影响。
+2. 填写角色模型的 API 地址、ID、协议、上下文上限与输出预算；行动脑可一键复用同一模型，也可独立配置。
+   云端用 API Key；免鉴权本地服务明确选择“本地免 Key”（仅允许回环）。不扫描其他部署的凭据。
+   保存后可读取供应商的模型列表；保存命名方案后可快捷切换自定义供应商，密钥不会回显。
+3. 填好角色名，导入 Markdown 或编辑人格正文。支持命名人格预设、快捷应用与旧文件备份。
+   模板见源码候选的 `templates/README.md`。切换不删除历史；不同角色完全隔离时请使用不同实例目录。
+4. **先保持 QQ 接入关闭，启动原生 Web。** 选择“角色名 · Owner”主会话体验双脑协作。
+   普通新建 DSH 会话不会自动获得部署 owner 的双脑授权。
+5. 需要 QQ 时，停止原生服务，在 NapCat WebUI 开启**带 Token、只绑定回环**的 HTTP/WS listener。
+   填写账号配置目录后选择已登录账号，或手动填写对应 endpoint/Token 和 owner QQ。
+   显式开启 QQ 接入并保存，再启动。启动器核对实际登录账号并等待通道新鲜就绪；失败不显示连接成功。
 
-## 更新
+私有目录包含 `deployment.json`、`private/`、`persona/`、`profiles/`、`runtimes/`、
+`memory/`、`logs/` 等。**不要上传整个实例目录或递归打包运行目录。**
+Windows 用 DACL，POSIX 用所有权和私有权限；缺少权限支持时拒绝读取凭据，不跳过校验。
 
-已有旧版本？双击 `update.bat` 即可自动升级（保护 config.yaml / SOUL.md / .env 不被覆盖）。
+## 可选能力
 
-## 支持的 LLM 供应商（13 家）
+- **知识库**：配置已有 Markdown/Obsidian vault。提供有界只读检索/读取，默认只有 owner 可读。
+- **Live2D**：停止控制台后执行 `python extras/scripts/bootstrap.py install-live2d`
+  （Linux 使用 `python3`），再在控制台启动。模型目录、下载源和端口可配置；
+  角色选取不写死。开启 Live2D owner 授权后，行动脑可列模型、切换、表情、动作、视线及尺寸。
+  现有模型不会被安装覆盖，素材权利仍由使用者核实。
+- **语音识别**：私有 `speech` 可配置 OpenAI 兼容转写 endpoint/model/Key；默认关闭。
+  不恢复旧 TTS/自动语音发送链路。
+- **自动化**：`automation_jobs` 默认空。每个任务显式设置 `id/kind/cron`；没有生产任务 ID 或默认发帖时间。
+  支持记忆维护、知识增量、Qzone、简报及控制告警；不追补错过的外部效果。
+- **隔离开发**：默认禁用可执行候选。Windows/Linux 可配置 Docker（镜像必须固定 digest）；
+  Linux 可显式选 bubblewrap。没有隔离后端就拒绝执行，绝不降级为直接运行候选代码。
+- **Agent Line / 飞书告警 / 字体与媒体预算**：在私有 JSON 配置，均不从生产部署继承。
 
-| 供应商 | 说明 |
-|--------|------|
-| DeepSeek | 性价比高 |
-| OpenCode Go | 推荐，一站式聚合 |
-| 智谱 GLM | glm-5.2 |
-| 火山方舟（豆包） | 字节跳动 |
-| 阿里百炼（通义千问） | qwen3.7-plus |
-| MiniMax | MiniMax-Text-01 |
-| Moonshot（Kimi） | kimi-k2 |
-| OpenAI | gpt-4o |
-| Anthropic | Claude 4 |
-| SiliconFlow | 国产开源模型聚合 |
-| OpenRouter | 400+ 模型聚合 |
-| Ollama / LM Studio | 本地部署 |
-| 自定义 | 任意 OpenAI 兼容端点 |
+## 边界
 
-## 给 AI agent 的操作指南
+- QQ 单 writer、群聊只由真实 self `@` 唤醒、仅最终内容出站；以平台 receipt 判断送达。
+- 普通成员没有 owner 主机权限。`host.root` 是兼容的内部能力名，不代表自动获得系统 root。
+  工具受当前用户、配置的 sandbox/权限模式和原任务授权限制。
+- 停止服务按本实例的 PID/创建时间及进程树处理；Windows 另使用 Job Object。
+  不按端口杀进程，不为注入 NapCat 强杀普通 QQ。
+- 控制台 / 聊天默认绑定回环，也可显式绑定服务机 Tailscale IPv4；不允许 `0.0.0.0`、公网或普通 LAN 绑定。
+  浏览器与服务不在同机时，在向导的“本机 / Tailscale 地址与端口”设置 `management_host` / `native_host`，
+  重启后访问服务机 Tailscale 地址，不是浏览器机器的 `127.0.0.1`。
+- 直接进入保留实际 TCP peer、Host / Origin / CSRF 与 DSH 签名 cookie / WebSocket 边界，不信转发头。
+  **能访问控制台的人有实例控制权限，必须用 Tailscale ACL 限制访问者。** 这不是公网免认证方案。
+  如需额外密码，可在私有配置显式开启 `management_require_key` / `native_require_key`。
 
-如果你想用 AI agent（如 OpenCode / Cursor / Claude Code）帮你安装、配置、运行这个机器人，请让 agent 阅读 `USER_AGENTS.md`（面向用户版，不含维护者运维信息）。
-
-
+候选内的 `UPGRADE.md` 说明更新/回滚，`MIGRATION.md` 说明源码改动与未验收项，
+`VALIDATION.md` 记录本轮真实验证边界；这些 1.0 文档将随对应源码一起公开，不以远端旧同名文件替代。
+各组件许可不同，发布前必须审查候选中的 `THIRD_PARTY_NOTICES.md`。
