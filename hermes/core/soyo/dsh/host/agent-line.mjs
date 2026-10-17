@@ -36,7 +36,7 @@ function auth(req, key) {
 export async function apply(ctx, settings) {
   const config = await privateJSON(settings.configFile), lineConfig = config.agent_line || {};
   for (const workspace of ctx.workspaceRegistry.list()) {
-    if (workspace.title === 'Soyo · Agent Line') await workspace.setTitle('Bot · 审阅协作').catch(() => {});
+    if (workspace.title === 'Soyo · Agent Line' || workspace.title === `${config.character_name || 'Bot'} · 审阅协作`) await workspace.setTitle(`${config.character_name || 'Bot'} · 审阅协作`).catch(() => {});
   }
   const root = lineConfig.root || join(config.native_root, 'agent-line'), eventsRoot = join(root, 'events'), outboxRoot = join(root, 'outbox');
   await Promise.all([root, eventsRoot, outboxRoot].map(path => mkdir(path, { recursive: true, mode: 0o700 })));
@@ -89,7 +89,7 @@ export async function apply(ctx, settings) {
     const handle = (await ctx.sessionPersistence.stat(sid))
       ? await ctx.agents.resume({ resumeSessionId: sid, setup, agentOptions })
       : await ctx.agents.create({ sessionId: sid, setup, agentOptions, meta: { cwd } });
-     handles.set(sid, handle); const workspace = await ctx.workspaceRegistry.create(cwd, 'Bot · 审阅协作'); await workspace.setTitle('Bot · 审阅协作'); await workspace.attachSession(sid);
+     handles.set(sid, handle); const workspace = await ctx.workspaceRegistry.create(cwd, `${config.character_name || 'Bot'} · 审阅协作`); await workspace.setTitle(`${config.character_name || 'Bot'} · 审阅协作`); await workspace.attachSession(sid);
      handle.agent.session.append('session/title', { title: (config.character_name || 'Bot') + ' ↔ ' + String(route.label || route.id).slice(0, 60), source: { kind: 'user' }, messageSeqs: [] });
      await ctx.sessions.flush(handle.agent.session);
     return handle.agent;

@@ -289,10 +289,10 @@ export async function apply(ctx, settings) {
   if (!stat) {
     const cwd = join(config.workspace, 'automation'); await mkdir(cwd, { recursive: true, mode: 0o700 });
     const session = ctx.sessions.prepare(sessionId, { meta: { cwd } });
-    session.append('session/title', { title: 'Bot · 自动化', source: { kind: 'user' }, messageSeqs: [] });
+    session.append('session/title', { title: `${config.character_name || 'Bot'} · 自动化`, source: { kind: 'user' }, messageSeqs: [] });
     const handle = await ctx.sessionPersistence.create(session.header); try { await handle.append(session.snapshotEvents()); await handle.flush(); } finally { await handle.close(); }
   }
-  const workspace = await ctx.workspaceRegistry.create(join(config.workspace, 'automation'), 'Bot · 自动化与心跳'); await workspace.setTitle('Bot · 自动化与心跳'); await workspace.attachSession(sessionId);
+  const workspace = await ctx.workspaceRegistry.create(join(config.workspace, 'automation'), `${config.character_name || 'Bot'} · 自动化与心跳`); await workspace.setTitle(`${config.character_name || 'Bot'} · 自动化与心跳`); await workspace.attachSession(sessionId);
 
   // Only explicitly configured future schedules are installed. No production
   // job IDs, remembered cron times, or automatic daily publication defaults.
@@ -344,7 +344,7 @@ export async function apply(ctx, settings) {
       const prior = manifest[probeJob];
       if (prior?.schedule_id && (await ctx.schedule.catalog()).some(row => row.id === prior.schedule_id && row.status === 'active'))
         return answer({ state: 'busy' }, 409);
-      const record = await ctx.schedule.create(sessionId, { title: 'Bot · native grant probe', after_seconds: 15,
+      const record = await ctx.schedule.create(sessionId, { title: `${config.character_name || 'Bot'} · native grant probe`, after_seconds: 15,
         prompt: `这是一次性、无平台副作用的原生 Schedule grant 验证。只调用一次 soyo_automation_probe_check，job_id=${probeJob}，读取返回的 marker 后最终只写 ${input.marker}。不能调用发布、web 或其他工具。` });
       manifest[probeJob] = { probe: true, marker: input.marker, schedule_id: record.id, session_id: sessionId, catchup: false };
       await durable(manifestPath, manifest);

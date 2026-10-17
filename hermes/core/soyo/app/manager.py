@@ -200,26 +200,28 @@ class Manager:
             if self._same_process(self.retained.get("web", {})) or self._same_process(self.retained.get("gateway", {})):
                 raise ValueError("Native services already owned; use explicit stop/restart")
             native, profile = render(self.home, self.config, runtime["directory"])
+            # DSH's first start resolves and compiles a large ESM/plugin graph.
+            # A stable V8 compile cache cuts repeated cold starts substantially
+            # and does not contain user data or credentials.
+            compile_cache = self.home / "run/node-compile-cache"
+            compile_cache.mkdir(parents=True, exist_ok=True, mode=0o700)
             env = worker_environment(extra={"DSH_HOME": str(self.home), "DSH_TELEMETRY_DISABLED": "1",
                 "DSH_PERMISSION_MODE": self.config["host_permission_mode"], "SOYO_HOST_PERMISSION_MODE": self.config["host_permission_mode"],
                 "SOYO_PYTHON": sys.executable, "SOYO_WORKER_ROOT": str(Path(runtime["directory"]) / "worker"),
-                "AGENT_QQBOT_PROJECT": str(project_root())})
+                "AGENT_QQBOT_PROJECT": str(project_root()), "NODE_COMPILE_CACHE": str(compile_cache)})
             env.update(read_json(self.home / "private/model-environment.json", default={}))
             child = self.spawn("web", [runtime["node"], runtime["cli"], "--profile", self.config["profile"]], cwd=self.home / "workspace", env=env)
-            from soyo.transport import private_client
             try:
                 deadline = time.monotonic() + self.config["ready_timeout"]
                 ready = False
                 while time.monotonic() < deadline and child.poll() is None:
                     try:
-                        if native.get('setup_mode'):
-                            with httpx.Client(trust_env=False, timeout=2) as client:
-                                response = client.get(f'http://{self.config["native_host"]}:{self.config["native_port"]}/')
-                                ready = response.status_code in (200, 303)
-                        else:
-                            with private_client(native, timeout=2) as client:
-                                response = client.post("/health", json={})
-                                ready = response.status_code == 200 and response.json().get("backend") == "dsh-native"
+                        # Probe the public native ingress, not the private channel.
+                        # The channel server only starts after this readiness gate,
+                        # so using it here deadlocks both Web-only and QQ startup.
+                        with httpx.Client(trust_env=False, timeout=2, follow_redirects=False) as client:
+                            response = client.get(f'http://{self.config["native_host"]}:{self.config["native_port"]}/')
+                            ready = response.status_code in (200, 303)
                     except httpx.HTTPError:
                         pass
                     if ready:

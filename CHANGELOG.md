@@ -1,6 +1,14 @@
 ﻿# bot-template 更新日志
 
-## 1.0.0 — 未发布（2026-10-17）
+## 1.0.1 — 2026-10-18
+
+- 修复原生启动就绪判定：改为探测公共 native ingress，消除 Web-only 与 QQ 启动互相等待的潜在死锁。
+- 工作区与会话标题跟随配置的角色名，不再硬编码 Bot / Soyo；旧标题在启动时归一化。
+- DSH 子进程启用稳定的 Node 编译缓存（`run/node-compile-cache`），缩短重复冷启动。
+- 修正 `native_goals.py` 被当作脚本直接调用时的包导入；测试读取本地 JSONL 明确使用 UTF-8。
+- 回归：Windows Python 196 通过 / 14 跳过，JS 78 通过。
+
+## 1.0.0 — 2026-10-17
 
 - 将原生 DSH 架构移植升为 1.0 主线；旧 Hermes / 0.x 停更，保留历史版本和 tag，不恢复 fallback。
 - 默认 Web-only 首次体验，不再要求先登录 QQ；QQ / NapCat 必须显式启用。
@@ -8,7 +16,7 @@
 - 修复真实安装发现的 Windows 环境变量大小写、ACL bootstrap、POSIX venv 解释器识别和依赖锁覆盖问题。
 - 补齐被旧 ignore 规则遗漏的独立社交状态源码；增加跨平台安装、配置、权限与恢复回归测试。
 - Windows / WSL 真实验收仅使用新私有实例和本地模型；不连接真实 QQ、不改既有 DSH 配置。
-- 具体完成项与剩余门禁见 [MIGRATION.md](MIGRATION.md)；未提交、推送或发布。
+- 具体完成项与剩余门禁见 [MIGRATION.md](MIGRATION.md)；1.0.0 构建以 `v1.0.0-rc.2` 发布。
 
 ### 以下为历史记录：Hermes / 0.x 已停更
 

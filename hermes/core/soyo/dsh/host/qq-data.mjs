@@ -91,7 +91,7 @@ export class QQData {
       finally { await handle.close(); }
       header = session.header;
     }
-    const workspace = await this.ctx.workspaceRegistry.create(header.cwd, 'Bot · QQ');
+    const workspace = await this.ctx.workspaceRegistry.create(header.cwd, `${this.config.character_name || 'Bot'} · QQ`);
     await workspace.attachSession(scene.session_id);
   }
   async project(route) {

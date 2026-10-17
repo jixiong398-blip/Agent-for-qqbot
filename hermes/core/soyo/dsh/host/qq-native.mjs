@@ -109,25 +109,15 @@ export async function apply(ctx, settings) {
   const lifetime = new AbortController();
   await mkdir(join(config.workspace, 'consultations'), { recursive: true, mode: 0o700 });
   await configureCollaborator(ctx, config);
+  const displayName = config.character_name || 'Bot';
   for (const workspace of ctx.workspaceRegistry.list()) {
-    const titles = new Map([
-      ['Soyo · 开发协作者', 'Bot · 辅助脑'],
-      ['Soyo · DSH Peer', 'Bot · Peer 协作'],
-      ['Soyo · Agent Line', 'Bot · Agent 协作'],
-      ['Soyo · 自动化', 'Bot · 自动化与心跳'],
-      ['Soyo · GPT 辅助脑', 'Bot · 辅助脑'],
-      ['Soyo · Peer 协作', 'Bot · Peer 协作'],
-      ['Soyo · Agent 协作', 'Bot · Agent 协作'],
-      ['Soyo · GPT 审阅协作', 'Bot · 审阅协作'],
-      ['Soyo · GPT 独立审阅', 'Bot · 独立审阅'],
-      ['Soyo · 自动化与心跳', 'Bot · 自动化与心跳'],
-      ['Soyo · QQ', 'Bot · QQ'],
-      ['Soyo · DSH', 'Bot · DSH'],
-    ]);
-    if (titles.has(workspace.title)) await workspace.setTitle(titles.get(workspace.title)).catch(() => {});
+    const match = /^(?:Bot|Soyo) · (.+)$/.exec(workspace.title);
+    if (!match) continue;
+    const desired = displayName + ' · ' + match[1];
+    if (workspace.title !== desired) await workspace.setTitle(desired).catch(() => {});
   }
-  const dshWorkspace = await ctx.workspaceRegistry.create(config.workspace, 'Bot · DSH');
-  await dshWorkspace.setTitle('Bot · DSH');
+  const dshWorkspace = await ctx.workspaceRegistry.create(config.workspace, displayName + ' · DSH');
+  await dshWorkspace.setTitle(displayName + ' · DSH');
   if (config.owner_session_id) try { await dshWorkspace.attachSession(config.owner_session_id); } catch {}
   const data = new QQData(ctx, config, args => memory(settings.configFile, config, args, lifetime.signal, config.data_script), jobs);
   await data.initialize();
@@ -561,7 +551,7 @@ export async function apply(ctx, settings) {
       if (!(error instanceof SessionPersistenceNotFoundError) && error.code !== 'SESSION_QUERY_SESSION_NOT_FOUND') throw error;
       const handle = await ctx.agents.create({ ...options, sessionId: 'soyo-memory-anchor' });
       memoryAnchorAgent = handle.agent;
-      try { handle.agent.session.append('session/title', { title: 'Bot · 记忆整理', source: { kind: 'system' }, messageSeqs: [] }); } catch {}
+      try { handle.agent.session.append('session/title', { title: displayName + ' · 记忆整理', source: { kind: 'system' }, messageSeqs: [] }); } catch {}
     }
     return memoryAnchorAgent;
   }

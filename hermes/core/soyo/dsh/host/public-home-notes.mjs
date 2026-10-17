@@ -18,7 +18,7 @@ export class PublicHomeNotes {
   async initialize() {
     this.persona = await readFile(this.config.soul_file, 'utf8');
     if (!this.persona || this.persona.length > 256 * 1024) throw Error('Note role persona unavailable');
-    this.workspace = await this.ctx.workspaceRegistry.create(this.config.workspace, 'Bot · DSH');
+    this.workspace = await this.ctx.workspaceRegistry.create(this.config.workspace, `${this.config.character_name || 'Bot'} · DSH`);
     const detach = this.brains.registerLane('public-note-home', {
       grant: exec => {
         const work = this.roles.get(exec.agent.id); if (!work) return null;
@@ -114,7 +114,7 @@ export class PublicHomeNotes {
           ? Promise.resolve({ kind: 'reject' }) : next());
       } });
     this.handles.set(id, handle); work.agent = handle.agent; await this.workspace.attachSession(id);
-    handle.agent.session.append('session/title', { title: 'Bot · 来自外面的便签 ' + note.from_name, source: { kind: 'user' }, messageSeqs: [] });
+    handle.agent.session.append('session/title', { title: (this.config.character_name || 'Bot') + ' · 来自外面的便签 ' + note.from_name, source: { kind: 'user' }, messageSeqs: [] });
     let end;
     const observe = this.ctx.on('session/event', (session, event) => { if (session.id === id && event.type === 'turn/end') end = event; }, { global: true });
     try {

@@ -12,9 +12,15 @@ import math
 import os
 import re
 import stat
+import sys
 import time
 import uuid
 from pathlib import Path
+
+if not __package__:
+    # Native Host invokes this module through native_memory.py as a file, not
+    # as an installed package; make the soyo package root importable.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from soyo.platform import open_private, assert_private
 
 

@@ -102,8 +102,8 @@ async function consultOne(ctx, config, question, parent, signal, state) {
         state.handle = await ctx.agents.create({ ...options, sessionId });
         state.handle.agent.session.append('session/title', { title: 'GPT · 技术辅助脑', source: { kind: 'user' }, messageSeqs: [] });
       }
-      const workspace = await ctx.workspaceRegistry.create(join(config.workspace, 'consultations'), 'Bot · 辅助脑');
-      await workspace.setTitle('Bot · 辅助脑');
+      const workspace = await ctx.workspaceRegistry.create(join(config.workspace, 'consultations'), `${config.character_name || 'Bot'} · 辅助脑`);
+      await workspace.setTitle(`${config.character_name || 'Bot'} · 辅助脑`);
       await workspace.attachSession(sessionId);
     }
     const handle = state.handle;

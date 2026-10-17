@@ -42,11 +42,11 @@ export class DualBrain {
     this.root = this.config.action_root || join(this.config.native_root, 'actions');
     this.workspaceRoot = this.config.development_home || join(this.config.workspace, 'development');
     await mkdir(this.root, { recursive: true, mode: 0o700 }); await mkdir(this.workspaceRoot, { recursive: true, mode: 0o700 });
-    this.workspace = await this.ctx.workspaceRegistry.create(this.workspaceRoot, 'Bot · 行动脑');
-    await this.workspace.setTitle('Bot · 行动脑');
+    this.workspace = await this.ctx.workspaceRegistry.create(this.workspaceRoot, `${this.config.character_name || 'Bot'} · 行动脑`);
+    await this.workspace.setTitle(`${this.config.character_name || 'Bot'} · 行动脑`);
     for (const workspace of this.ctx.workspaceRegistry.list()) {
       if (workspace.id !== this.workspace.id && workspace.title === 'Soyo · 行动脑')
-        await workspace.setTitle('Bot · 行动脑（旧候选）').catch(() => {});
+        await workspace.setTitle(`${this.config.character_name || 'Bot'} · 行动脑（旧候选）`).catch(() => {});
     }
     for (const file of await readdir(this.root)) if (/^action-[0-9a-f-]{36}\.json$/.test(file)) {
       const task = await privateJSON(join(this.root, file));

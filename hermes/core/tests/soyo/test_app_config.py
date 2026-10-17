@@ -115,7 +115,6 @@ def test_child_environment_retains_case_insensitive_os_keys_but_no_provider_secr
 
 def test_web_only_manager_never_initializes_napcat_or_gateway(tmp_path, monkeypatch):
     from soyo.app import manager, install
-    from soyo import transport
     from soyo.qq import runtime as qq_runtime
     home, _ = configured(tmp_path)
     config.atomic_json(home / 'private/runtime.json', {'directory': str(home / 'runtime'), 'node': 'node', 'cli': 'fixture-cli', 'source_fingerprint': 'fixture'})
@@ -128,11 +127,11 @@ def test_web_only_manager_never_initializes_napcat_or_gateway(tmp_path, monkeypa
     monkeypatch.setattr(instance, 'start_gateway', forbidden)
     spawned = []
     monkeypatch.setattr(instance, 'spawn', lambda name, *args, **kwargs: spawned.append(name) or SimpleNamespace(poll=lambda: None))
-    class Client:
+    class Probe:
         def __enter__(self): return self
         def __exit__(self, *args): pass
-        def post(self, *args, **kwargs): return SimpleNamespace(status_code=200, json=lambda: {'backend': 'dsh-native'})
-    monkeypatch.setattr(transport, 'private_client', lambda *args, **kwargs: Client())
+        def get(self, url): return SimpleNamespace(status_code=200)
+    monkeypatch.setattr(manager.httpx, 'Client', lambda *args, **kwargs: Probe())
     result = instance.start_native()
     assert spawned == ['web'] and result['mode'] == 'web-only'
     assert result['services']['gateway']['state'] == 'disabled'

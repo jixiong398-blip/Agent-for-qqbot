@@ -21,8 +21,8 @@ export class ScheduledBrains {
   async initialize() {
     this.persona = await readFile(this.config.soul_file, 'utf8');
     if (!this.persona || this.persona.length > 256 * 1024) throw Error('Scheduled role persona is not ready');
-    this.workspace = await this.ctx.workspaceRegistry.create(join(this.config.workspace, 'automation'), 'Bot · 自动化与心跳');
-    await this.workspace.setTitle('Bot · 自动化与心跳');
+    this.workspace = await this.ctx.workspaceRegistry.create(join(this.config.workspace, 'automation'), `${this.config.character_name || 'Bot'} · 自动化与心跳`);
+    await this.workspace.setTitle(`${this.config.character_name || 'Bot'} · 自动化与心跳`);
     const detach = this.brains.registerLane('native-schedule', {
       grant: exec => {
         const item = this.roles.get(exec.agent.id); if (!item) return null;
@@ -121,7 +121,7 @@ export class ScheduledBrains {
       } });
     this.handles.set(roleId, handle); item.agent = handle.agent;
     await this.workspace.attachSession(roleId);
-    handle.agent.session.append('session/title', { title: 'Bot · 主动任务 ' + work.job_id, source: { kind: 'user' }, messageSeqs: [] });
+    handle.agent.session.append('session/title', { title: (this.config.character_name || 'Bot') + ' · 主动任务 ' + work.job_id, source: { kind: 'user' }, messageSeqs: [] });
     let firstEnd;
     const observe = this.ctx.on('session/event', (session, event) => { if (session.id === roleId && event.type === 'turn/end') firstEnd = event; }, { global: true });
     try {

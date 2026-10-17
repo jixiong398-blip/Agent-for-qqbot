@@ -144,7 +144,7 @@ def test_group_ambient_history_and_reply_are_local_only_but_live_self_at_submits
         assert channel.ingest_onebot_event({**_event(), "message_id": "historical"}, historical=True).accepted
         assert channel.ingest_onebot_event(_event()).accepted
         assert channel.submit_pending_inbound(ports) == 1
-        retained = (channel.journal.journal_root / "inbound_context_only.jsonl").read_text()
+        retained = (channel.journal.journal_root / "inbound_context_only.jsonl").read_text(encoding="utf-8")
         assert all(item["message_id"] in retained for item in events)
         assert "historical" in retained
         assert not channel.journal.spool_list("inbound")
