@@ -40,8 +40,16 @@ export async function mountSetupApi(ctx, config) {
     napcat(request) { return post('/api/setup/napcat', request); }
     models(request) { return post('/api/models/list', request); }
     preset(request) { return post('/api/setup/preset', request); }
+    status() { return wire('/api/status'); }
+    logs(request) { return wire('/api/logs?service=' + encodeURIComponent(String(request?.service || 'manager'))); }
+    service(request) {
+      const operation = String(request?.operation || ''), service = String(request?.service || '');
+      if (!['start', 'stop', 'restart'].includes(operation) || !['native', 'web', 'gateway', 'napcat', 'live2d'].includes(service))
+        throw Error('Unsupported service operation.');
+      return post('/api/services/' + operation, { service });
+    }
   }
-  for (const name of ['view', 'save', 'napcat', 'models', 'preset'])
+  for (const name of ['view', 'save', 'napcat', 'models', 'preset', 'status', 'logs', 'service'])
     Remote(SetupApi.prototype[name], { name, kind: 'method', static: false, private: false, addInitializer: init => initializers.push(init) });
   new SetupApi();
 }

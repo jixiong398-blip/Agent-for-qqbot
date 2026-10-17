@@ -205,6 +205,14 @@ select.bqs-control { appearance: none; padding-right: 34px; cursor: pointer; }
   .bqs-row-between { gap: 10px; }
 }
 @media (prefers-reduced-motion: reduce) { .bqs-dialog * { transition: none !important; scroll-behavior: auto !important; } }
+  .bqs-page { display: flex; flex-direction: column; min-height: 0; }
+  .bqs-page .bqs-top { padding: 0 0 16px; }
+  .bqs-page .bqs-scroll { padding: 0; overflow: visible; flex: 1; }
+  .bqs-page .bqs-footer { padding: 16px 0 0; background: transparent; }
+  .bqs-service-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--bqs-line); }
+  .bqs-service-row:first-child { border-top: 0; }
+  .bqs-service-name { display: block; font-size: 13px; font-weight: 500; }
+  .bqs-logs { margin: 0; padding: 12px 14px; max-height: 320px; overflow: auto; border: 1px solid var(--bqs-line); border-radius: 11px; background: var(--bqs-soft); font: 12px/1.6 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 `;
     const ICONS = {
       layers: ['m12 3 9 5-9 5-9-5 9-5Z', 'm3 12 9 5 9-5', 'm3 16 9 5 9-5'],
@@ -236,14 +244,14 @@ select.bqs-control { appearance: none; padding-right: 34px; cursor: pointer; }
       { id: 'qq', label: 'QQ / NapCat', caption: '账号登录与连接', icon: 'plug', description: '可以先聊一聊，再决定是否将 Bot 接入 QQ。' },
     ];
 
-    function NativeSetup({ wide }) {
-      const [open, setOpen] = React.useState(false), [tab, setTab] = React.useState('models');
+    function NativeSetup({ pageTab = 'models' }) {
+      const [tab, setTab] = React.useState(pageTab);
       const [sample, setSample] = React.useState(null), [draft, setDraft] = React.useState(null);
       const [text, setText] = React.useState(''), [notice, setNotice] = React.useState(''), [noticeKind, setNoticeKind] = React.useState('info');
       const [busy, setBusy] = React.useState(false), [account, setAccount] = React.useState('');
       const [modelProfile, setModelProfile] = React.useState(''), [saveProfileName, setSaveProfileName] = React.useState('');
       const [personaPreset, setPersonaPreset] = React.useState(''), [savePersonaName, setSavePersonaName] = React.useState('');
-      const dialog = React.useRef(null), scroll = React.useRef(null), baseline = React.useRef('');
+      const scroll = React.useRef(null), baseline = React.useRef('');
       const pending = ['queued', 'applying'].includes(sample?.operation?.phase);
       const call = async (method, request) => {
         const result = await setupConnection.rpc.call('/api', 'botSetup/' + method, { args: request === undefined ? {} : { request } });
@@ -263,21 +271,17 @@ select.bqs-control { appearance: none; padding-right: 34px; cursor: pointer; }
         }
         return value;
       };
-      React.useEffect(() => { load(true).then(value => { if (!value.configured) setOpen(true); })
+      React.useEffect(() => { load(true)
         .catch(error => { setNoticeKind('error'); setNotice(error.message); }); }, []);
-      React.useEffect(() => {
-        if (open && dialog.current && !dialog.current.open) dialog.current.showModal();
-        if (!open && dialog.current?.open) dialog.current.close();
-      }, [open]);
       React.useEffect(() => { scroll.current?.scrollTo({ top: 0 }); }, [tab]);
       React.useEffect(() => {
-        if (!open || !pending) return;
+        if (!pending) return;
         const timer = setInterval(() => { load().then(value => {
           if (value.operation.phase === 'applied') location.reload();
           else if (value.operation.phase === 'failed') { setNoticeKind('error'); setNotice('应用未完成，原配置和恢复证据保留；请重新读取后核对。'); }
         }).catch(() => setNotice('原生 DSH 正在重连，请稍候…')); }, 2000);
         return () => clearInterval(timer);
-      }, [open, pending]);
+      }, [pending]);
       const run = async work => {
         setBusy(true); setNoticeKind('info'); setNotice('正在处理…');
         try { await work(); } catch (error) { setNoticeKind('error'); setNotice(error.message); } finally { setBusy(false); }
@@ -437,21 +441,14 @@ select.bqs-control { appearance: none; padding-right: 34px; cursor: pointer; }
       const dirty = draft && baseline.current !== JSON.stringify({ draft, text, modelProfile, saveProfileName });
       const active = TABS.find(item => item.id === tab);
       return h(React.Fragment, {}, h('style', {}, STYLES),
-        h('button', { type: 'button', className: 'bqs-launch', title: 'Bot 配置', 'aria-label': '打开 Bot 配置', onClick: () => { setTab('models'); setOpen(true); } }, icon('layers', 17), wide && 'Bot 配置'),
-        h('button', { type: 'button', className: 'bqs-launch', title: 'NapCat / QQ', 'aria-label': '打开 NapCat 与 QQ 连接', onClick: () => { setTab('qq'); setOpen(true); } }, icon('plug', 17), wide && 'NapCat / QQ'),
-        h('dialog', { ref: dialog, className: 'bqs-dialog', 'aria-label': 'Bot 原生配置', onCancel: () => setOpen(false) },
-          h('div', { className: 'bqs-shell' }, h('header', { className: 'bqs-top' },
-            h('div', { className: 'bqs-mark' }, icon('model', 21)), h('div', {}, h('div', { className: 'bqs-top-title' }, 'Bot 设置'), h('p', { className: 'bqs-top-caption' }, '让 Bot 按你的方式工作')),
+        h('div', { className: 'bqs-page' },
+          h('header', { className: 'bqs-top' },
+            h('div', { className: 'bqs-mark' }, icon(active.icon, 21)),
+            h('div', {}, h('div', { className: 'bqs-top-title' }, active.label), h('p', { className: 'bqs-top-caption' }, active.description)),
             h('div', { className: 'bqs-top-end' }, h('span', { className: 'bqs-state', 'data-state': dirty ? 'dirty' : sample?.configured ? 'ready' : 'new' },
-              h('span', { className: 'bqs-dot' }), pending ? '等待应用' : dirty ? '有未保存更改' : sample?.configured ? '配置已保存' : '待完成配置'),
-            h('button', { type: 'button', className: 'bqs-icon-button', onClick: () => setOpen(false), 'aria-label': '关闭 Bot 配置', title: '关闭' }, icon('close', 18)))),
-          h('div', { className: 'bqs-layout' }, h('aside', { className: 'bqs-aside' }, h('div', { className: 'bqs-nav-label' }, '工作空间'),
-            h('nav', { className: 'bqs-nav', 'aria-label': '配置分类' }, ...TABS.map(item => h('button', { type: 'button', key: item.id, className: 'bqs-nav-button',
-              'aria-label': item.label, 'aria-pressed': tab === item.id, onClick: () => setTab(item.id) }, icon(item.icon, 18),
-              h('span', {}, h('span', { className: 'bqs-nav-title' }, item.label), h('span', { className: 'bqs-nav-caption' }, item.caption))))),
-            h('div', { className: 'bqs-local' }, icon('shield', 14), h('span', {}, '仅本机 · 私有配置', h('br'), '密钥不进入聊天记录'))),
+              h('span', { className: 'bqs-dot' }), pending ? '等待应用' : dirty ? '有未保存更改' : sample?.configured ? '配置已保存' : '待完成配置'))),
           h('form', { className: 'bqs-form', onSubmit: event => { event.preventDefault(); save(); } },
-            h('div', { ref: scroll, className: 'bqs-scroll' }, h('div', { className: 'bqs-intro' }, h('h2', {}, active.label), h('p', {}, active.description)),
+            h('div', { ref: scroll, className: 'bqs-scroll' },
               notice && h('div', { className: 'bqs-notice', role: 'status', 'aria-live': 'polite', 'data-kind': noticeKind }, icon('info', 15), h('span', {}, notice)),
               !draft ? h('div', { className: 'bqs-skeleton', 'aria-label': '正在读取私有配置', 'aria-busy': true }, h('span'), h('span'),
                 button('重新读取', async () => { await load(true); setNotice(''); }, { glyph: 'refresh' })) :
@@ -459,31 +456,91 @@ select.bqs-control { appearance: none; padding-right: 34px; cursor: pointer; }
             h('footer', { className: 'bqs-footer' }, h('span', { className: 'bqs-footer-note' }, icon('shield', 13), '只保存在当前实例'),
               button('重新读取', async () => { await load(true); setNotice('已重新读取。'); }, { aria: '重新读取（放弃未保存编辑）', variant: 'ghost', glyph: 'refresh' }),
               h('button', { type: 'submit', className: 'bqs-button', 'data-variant': 'primary', disabled: !draft || busy || pending },
-                pending ? icon('refresh', 15) : icon('check', 16), pending ? '等待应用 / 重连…' : '保存并应用配置')))))));
+                pending ? icon('refresh', 15) : icon('check', 16), pending ? '等待应用 / 重连…' : '保存并应用配置')))));
     }
     return {
-      inject: ['slots', 'uiWorkspace', 'connection'],
+      inject: ['slots', 'connection'],
       apply(ctx) {
         setupConnection = ctx.connection;
-        ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({ name: 'sidebar.footer.action', id: 'bot-setup', order: 280 }, NativeSetup));
-        const owner = window.__AGENT_QQBOT_OWNER__;
-        if (owner?.sessionId) {
-          const OpenOwner = ({ wide }) => React.createElement('button', {
-            type: 'button', title: (owner.label || 'Bot') + ' · Owner', 'aria-label': '打开 Bot 主会话',
-            onClick: () => ctx.uiWorkspace.openSession(owner.sessionId),
-            style: { padding: '8px', cursor: 'pointer', color: 'inherit', background: 'none', border: 0 },
-          }, wide ? (owner.label || 'Bot') + ' · Owner' : 'Bot');
-          ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({ name: 'sidebar.footer.action', id: 'bot-owner', order: 290 }, OpenOwner));
+        const pages = [
+          ['soyo-bot-models', 30, '模型与脑区', 'models'],
+          ['soyo-bot-persona', 31, '角色设定', 'persona'],
+          ['soyo-bot-qq', 32, 'NapCat / QQ', 'qq'],
+        ];
+        for (const [id, order, label, pageTab] of pages) {
+          const Page = () => React.createElement(NativeSetup, { pageTab });
+          ctx.slots.inject('settings.section', () => ctx.slots.register({ name: 'settings.section', id, order, label }, Page));
         }
         const publicURL = window.__SOYO_DASHBOARD_URL__;
-        if (!publicURL) return;
-        const url = new URL(publicURL);
-        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error('Dashboard browser URL must be clean.');
-        const Link = ({ wide }) => React.createElement('a', {
-          href: url.origin, target: '_blank', rel: 'noopener noreferrer', title: 'Bot 管理 Web（独立面板；不会继承 DSH 登录身份）', 'aria-label': '打开 Bot 管理 Web',
-          style: { padding: '8px', display: 'inline-block', color: 'inherit' },
-        }, wide ? '管理 Web ↗' : '↗');
-        ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({ name: 'sidebar.footer.action', id: 'soyo-dashboard', order: 300 }, Link));
+        const managementURL = publicURL ? new URL(publicURL) : null;
+        if (managementURL && (!['http:', 'https:'].includes(managementURL.protocol) || managementURL.username || managementURL.password || managementURL.search || managementURL.hash || managementURL.pathname !== '/')) throw new Error('Dashboard browser URL must be clean.');
+        const callSetup = async (method, request) => {
+          const result = await setupConnection.rpc.call('/api', 'botSetup/' + method, { args: request === undefined ? {} : { request } });
+          if (!result.ok) throw Error(result.error?.message || '管理操作未完成');
+          return result.value;
+        };
+        const ManagementPage = () => {
+          const [status, setStatus] = React.useState(null);
+          const [service, setService] = React.useState('manager');
+          const [lines, setLines] = React.useState([]);
+          const [notice, setNotice] = React.useState('');
+          const [busy, setBusy] = React.useState(false);
+          const refresh = async () => {
+            const next = await callSetup('status');
+            setStatus(next);
+            const log = await callSetup('logs', { service });
+            setLines(log.lines || []);
+          };
+          React.useEffect(() => { refresh().catch(error => setNotice(error.message)); }, []);
+          React.useEffect(() => {
+            const timer = setInterval(() => { callSetup('logs', { service }).then(value => setLines(value.lines || [])).catch(() => {}); }, 2500);
+            return () => clearInterval(timer);
+          }, [service]);
+          const control = async (operation, name) => {
+            setBusy(true); setNotice('');
+            try { await callSetup('service', { operation, service: name }); await refresh(); setNotice('操作已提交；请核对状态与日志。'); }
+            catch (error) { setNotice(error.message); } finally { setBusy(false); }
+          };
+          const stateText = (name, row) => name === 'gateway'
+            ? ({ disabled: '未启用', stopped: '未连接', connected: '最近心跳正常', connecting: '正在连接', stale: '心跳已过期', disconnected: '已断开' })[row.state] || '尚未确认'
+            : row.running ? '运行中' : '未运行';
+          return h(React.Fragment, {}, h('style', {}, STYLES),
+            h('div', { className: 'bqs-page' },
+              h('header', { className: 'bqs-top' },
+                h('div', { className: 'bqs-mark' }, icon('external', 21)),
+                h('div', {}, h('div', { className: 'bqs-top-title' }, '管理 Web'),
+                  h('p', { className: 'bqs-top-caption' }, '本实例的服务状态、启停与运行日志'))),
+              h('div', { className: 'bqs-scroll' },
+                notice && h('div', { className: 'bqs-notice', 'data-kind': 'error', role: 'status', 'aria-live': 'polite' }, icon('info', 15), h('span', {}, notice)),
+                h('section', { className: 'bqs-card' },
+                  h('div', { className: 'bqs-card-head' }, h('h3', { className: 'bqs-card-title' }, icon('layers', 16), '服务')),
+                  h('div', { className: 'bqs-card-body' },
+                    status ? Object.entries(status.services).map(([name, row]) => h('div', { className: 'bqs-service-row', key: name },
+                      h('div', {}, h('span', { className: 'bqs-service-name' }, name),
+                        h('span', { className: 'bqs-hint' }, stateText(name, row) + (row.pid ? ' · PID ' + row.pid : ''))),
+                      ['napcat', 'live2d'].includes(name) && h('button', { type: 'button', className: 'bqs-button', 'data-variant': 'soft', disabled: busy,
+                        onClick: () => control(row.running ? 'stop' : 'start', name) }, row.running ? '停止' : '启动'))) :
+                      h('div', { className: 'bqs-skeleton' }, h('span'), h('span'))),
+                  h('div', { className: 'bqs-card-tail' }, h('div', { className: 'bqs-row' },
+                    h('button', { type: 'button', className: 'bqs-button', 'data-variant': 'primary', disabled: busy,
+                      onClick: () => control('start', 'native') }, icon('play', 14), '启动原生 Web'),
+                    h('button', { type: 'button', className: 'bqs-button', 'data-variant': 'ghost', disabled: busy,
+                      onClick: () => control('stop', 'native') }, '停止原生服务')))),
+                h('section', { className: 'bqs-card' },
+                  h('div', { className: 'bqs-card-head' }, h('h3', { className: 'bqs-card-title' }, icon('info', 16), '运行日志'),
+                    h('div', { className: 'bqs-head-action' }, h('label', { className: 'bqs-select' },
+                      h('select', { className: 'bqs-control', 'aria-label': '日志服务', value: service, onChange: event => setService(event.target.value) },
+                        ...['manager', 'web', 'gateway', 'napcat', 'live2d'].map(name => h('option', { key: name, value: name }, name))), icon('down', 14)))),
+                  h('div', { className: 'bqs-card-body' },
+                    h('pre', { className: 'bqs-logs' }, lines.length ? lines.join('\n') : '暂无日志。'),
+                    h('p', { className: 'bqs-hint' }, '密钥会脱敏。回合结束不等于 QQ 已发送，以通道真实回执为准。')),
+                  h('div', { className: 'bqs-card-tail' }, h('div', { className: 'bqs-row' },
+                    h('button', { type: 'button', className: 'bqs-button', 'data-variant': 'ghost',
+                      onClick: () => refresh().catch(error => setNotice(error.message)) }, icon('refresh', 14), '刷新'),
+                    managementURL && h('a', { className: 'bqs-button', 'data-variant': 'ghost', href: managementURL.origin, target: '_blank', rel: 'noopener noreferrer' },
+                      '打开独立管理 Web ↗', icon('external', 14))))))));
+        };
+        ctx.slots.inject('settings.section', () => ctx.slots.register({ name: 'settings.section', id: 'soyo-dashboard', order: 34, label: '管理 Web' }, ManagementPage));
       },
     };
   },
