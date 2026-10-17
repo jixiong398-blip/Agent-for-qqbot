@@ -13,7 +13,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[2]
 ROOT_FILES = {'README.md', 'USER_AGENTS.md', 'UPGRADE.md', 'MIGRATION.md', 'VALIDATION.md', 'THIRD_PARTY_NOTICES.md',
     'LICENSE', 'VERSION', 'CHANGELOG.md', 'application.toml', 'install.bat', 'start.bat', 'Stop-All.bat',
-    '配置API.bat', 'update.bat', 'install.sh', 'start.sh', 'configure.sh', 'stop.sh', '.gitignore', '.gitattributes'}
+    '配置API.bat', 'update.bat', 'install.sh', 'start.sh', 'configure.sh', 'stop.sh', 'update.sh', '.gitignore', '.gitattributes'}
 SCRIPT_FILES = {'bootstrap.py', 'bootstrap.ps1', 'portable_launcher.py', 'build_portable.py', 'install.py', 'setup_config.py', 'upgrade.py', 'decrypt_cvpkg.py', 'package_source.py'}
 
 

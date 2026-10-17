@@ -23,6 +23,12 @@ def main():
         raise SystemExit("Install Python " + metadata["runtime"]["python_minimum"] + "+ first")
     home = Path(os.path.abspath(Path(os.environ.get("AGENT_QQBOT_HOME", str(Path.home() / ".agent-for-qqbot"))).expanduser()))
     arguments = sys.argv[1:] or ["start"]
+    if (ROOT / "portable-manifest.json").is_file():
+        # One dispatcher for both layouts: the prebuilt bundle reuses its own Python.
+        bundled = ROOT / "runtime/python" / ("python.exe" if os.name == "nt" else "bin/python3")
+        launcher = Path(__file__).resolve().parent / "portable_launcher.py"
+        python = bundled if bundled.is_file() else Path(sys.executable)
+        return subprocess.call([str(python), "-I", "-B", str(launcher), *arguments], env=os.environ.copy())
     python = home / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     # POSIX venv python is normally a symlink to the system interpreter. Compare
     # environments, not resolved executables, or installed dependencies vanish.

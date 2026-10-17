@@ -414,10 +414,14 @@ def install_live2d(home):
         protect(destination, directory=True)
         (destination / 'tools').mkdir(exist_ok=True)
         shutil.copy2(project_root() / 'extras/scripts/decrypt_cvpkg.py', destination / 'tools/decrypt_cvpkg.py')
-        run([sys.executable, '-m', 'pip', 'install', '--index-url', config['registries']['pypi'], '-e', str(project_root() / 'hermes/core') + '[live2d]'])
+        venv = destination / 'venv'
+        run([sys.executable, '-m', 'venv', str(venv)])
+        live_python = venv / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        run([str(live_python), '-m', 'pip', 'install', '--index-url', config['registries']['pypi'],
+             '--disable-pip-version-check', '-e', str(project_root() / 'hermes/core') + '[live2d]'])
         run([*npm, 'install', '--registry', config['registries']['npm'], '--no-audit', '--no-fund'], cwd=destination)
         if os.name == 'nt': electron = destination / 'node_modules/electron/dist/electron.exe'
         elif sys.platform == 'darwin': electron = destination / 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'
         else: electron = destination / 'node_modules/electron/dist/electron'
         if not electron.is_file(): raise ValueError('Optional Electron distribution is missing')
-        atomic_json(home / 'private/live2d-runtime.json', {'directory': str(destination), 'electron': str(electron)})
+        atomic_json(home / 'private/live2d-runtime.json', {'directory': str(destination), 'electron': str(electron), 'python': str(live_python)})

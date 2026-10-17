@@ -47,7 +47,7 @@ Linux QQ 宿主 / 图形依赖仍须符合 NapCat 官方要求；包含 Shell �
 | 启动 | `start.bat` | `sh start.sh` |
 | 配置 | DSH 内的 Bot 配置 / NapCat 窗口 | 同左 |
 | 停止本实例 | `Stop-All.bat` | `sh stop.sh` |
-| 使用已解压的新预构建运行时 | 停止后运行新包 `update.bat` | 停止后运行新包的更新入口 |
+| 使用已解压的新预构建运行时 | 停止后运行新包 `update.bat` | 停止后运行新包 `sh update.sh` |
 
 默认数据在用户目录的 `.agent-for-qqbot`，可用 `AGENT_QQBOT_HOME` 指定独立私有目录。
 数据与程序分离；新包不覆盖人格、数据库或登录记录。不要指向旧 Hermes home，不要把私有实例上传或递归打包。

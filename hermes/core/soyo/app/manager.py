@@ -300,7 +300,7 @@ class Manager:
                 LIVE2D_CONTROL_KEY=(self.home / 'private/live2d-key').read_text(encoding='ascii').strip(),
                 LIVE2D_MODELS_DIR=self.config['live2d'].get('models_directory') or str(self.home / 'live2d/models'),
                 LIVE2D_MANIFEST_URL=self.config['live2d'].get('manifest_url') or '',
-                LIVE2D_DECRYPT_SCRIPT=str(directory / 'tools/decrypt_cvpkg.py'), SOYO_PYTHON=sys.executable)
+                LIVE2D_DECRYPT_SCRIPT=str(directory / 'tools/decrypt_cvpkg.py'), SOYO_PYTHON=installed.get('python') or sys.executable)
         self.spawn(service, command, cwd=directory, env=worker_environment(extra=extra))
         return self.status()
 

@@ -122,13 +122,15 @@ select.bqs-control { appearance: none; padding-right: 34px; cursor: pointer; }
 .bqs-shared { display: flex; gap: 12px; align-items: center; border-radius: 10px; background: var(--bqs-soft); padding: 12px 14px; margin-top: 17px; }
 .bqs-shared > svg { color: var(--bqs-blue); }
 .bqs-shared p { font-size: 12px; font-weight: 500; }
-.bqs-disclosure { border-top: 1px solid var(--bqs-line); padding-top: 15px; margin-top: 18px; min-width: 0; }
-.bqs-disclosure > summary { list-style: none; display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; color: var(--bqs-muted); }
+.bqs-disclosure { border-top: 1px solid var(--bqs-line); padding-top: 13px; margin-top: 18px; min-width: 0; }
+.bqs-disclosure > summary { list-style: none; display: flex; align-items: center; gap: 6px; min-height: 24px; cursor: pointer; font-size: 13px; line-height: 24px; color: var(--dsw-alias-label-tertiary, var(--bqs-muted)); transition: color 100ms ease; }
+.bqs-disclosure > summary:hover { color: var(--dsw-alias-label-secondary, var(--bqs-ink)); }
 .bqs-disclosure > summary::-webkit-details-marker { display: none; }
-.bqs-disclosure > summary > svg { transition: transform .15s; }
-.bqs-disclosure[open] > summary > svg { transform: rotate(90deg); }
-.bqs-disclosure > .bqs-stack { padding-top: 17px; }
-.bqs-summary-note { margin-left: auto; color: var(--bqs-muted); font-size: 11px; }
+.bqs-disclosure > summary:focus-visible { outline: 2px solid var(--bqs-purple); outline-offset: 3px; border-radius: 6px; }
+.bqs-disclosure > summary > svg { flex: none; width: 14px; height: 14px; transform: rotate(90deg); transition: transform 120ms ease; }
+.bqs-disclosure[open] > summary > svg { transform: rotate(-90deg); }
+.bqs-disclosure > .bqs-stack { padding-top: 14px; }
+.bqs-summary-note { margin-left: auto; color: var(--bqs-muted); font-size: 12px; }
 .bqs-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 10px; }
 .bqs-editor-meta { font-size: 11px; color: var(--bqs-muted); }
 .bqs-import { display: inline-flex; position: relative; align-items: center; gap: 6px; cursor: pointer; }
@@ -306,7 +308,7 @@ select.bqs-control { appearance: none; padding-right: 34px; cursor: pointer; }
         h('span', { className: 'bqs-switch' }, h('input', { type: 'checkbox', 'aria-label': aria, checked, disabled: busy || pending,
           onChange: e => change(e.target.checked) }), h('span', { className: 'bqs-switch-track', 'aria-hidden': true })));
       const disclosure = (title, body, note) => h('details', { className: 'bqs-disclosure' },
-        h('summary', {}, icon('chevron', 13), title, note && h('span', { className: 'bqs-summary-note' }, note)), h('div', { className: 'bqs-stack' }, body));
+        h('summary', {}, icon('chevron', 14), title, note && h('span', { className: 'bqs-summary-note' }, note)), h('div', { className: 'bqs-stack' }, body));
       const card = (title, body, { glyph, caption, action, tail } = {}) => h('section', { className: 'bqs-card' },
         h('div', { className: 'bqs-card-head' }, h('h3', { className: 'bqs-card-title' }, glyph && icon(glyph, 16), title), action && h('div', { className: 'bqs-head-action' }, action)),
         caption && h('p', { className: 'bqs-card-caption' }, caption), h('div', { className: 'bqs-card-body' }, body),

@@ -13,8 +13,8 @@
 
 ## 更新源码与运行时
 
-普通用户优先使用预构建包：停止本实例后完整解压新包，运行新包 `update.bat` 或
-`runtime/python/bin/python3 extras/scripts/portable_launcher.py update`，再启动。
+普通用户优先使用预构建包：停止本实例后完整解压新包，运行新包 `update.bat`（Windows）或
+`sh update.sh`（Linux），再启动。两种入口最终都走同一个 `bootstrap.py` 分派。
 运行时选择不会编译 / 联网安装依赖，不自动登录 QQ；已有 NapCat 登录目录不在未审核的更新中原地覆盖。
 以下源码流程仅供维护者，不是用户前置步骤。
 

@@ -4,19 +4,23 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 
-test('Bot owner shortcut opens only the explicitly configured session, including a blank owner', () => {
+test('Bot settings live in the DSH settings dialog, not the sidebar footer', () => {
   const source = readFileSync(new URL('../../soyo/dsh/dashboard/client.js', import.meta.url), 'utf8');
-  let plugin; const slots = [], opened = [];
+  let plugin; const slots = [];
   const window = { __AGENT_QQBOT_OWNER__: { sessionId: 'fixture-owner', label: 'My chosen name' },
     __SOYO_DASHBOARD_URL__: 'http://127.0.0.1:12345', __ModuleLoader__: { load: value => { plugin = value; } } };
   const React = { createElement: (type, props, ...children) => ({ type, props, children }) };
-  const ctx = { slots: { inject: (_name, register) => register(), register: (meta, component) => slots.push({ meta, component }) },
-    uiWorkspace: { openSession: id => opened.push(id) } };
-  runInNewContext(source, { window, URL }); plugin.factory(() => React).apply(ctx);
-  const node = slots.find(row => row.meta.id === 'bot-owner').component({ wide: true });
-  assert.equal(node.props['aria-label'], '打开 Bot 主会话');
-  assert.equal(node.children[0], 'My chosen name · Owner');
-  assert.equal(opened.length, 0);
-  node.props.onClick(); assert.deepEqual(opened, ['fixture-owner']);
-  assert.equal(slots.find(row => row.meta.id === 'soyo-dashboard').component({ wide: true }).props['aria-label'], '打开 Bot 管理 Web');
+  const ctx = {
+    slots: { inject: (_name, register) => register(), register: (meta, component) => slots.push({ meta, component }) },
+    connection: { rpc: { call: async () => ({ ok: true, value: {} }) } },
+  };
+  runInNewContext(source, { window, URL });
+  plugin.factory(() => React).apply(ctx);
+  assert.equal(slots.filter(row => row.meta.name === 'sidebar.footer.action').length, 0);
+  const sections = slots.filter(row => row.meta.name === 'settings.section');
+  assert.deepEqual(sections.map(row => row.meta.id),
+    ['soyo-bot-models', 'soyo-bot-persona', 'soyo-bot-qq', 'soyo-dashboard']);
+  assert.deepEqual(sections.map(row => row.meta.order), [30, 31, 32, 34]);
+  assert.deepEqual(sections.map(row => row.meta.label), ['模型与脑区', '角色设定', 'NapCat / QQ', '管理 Web']);
+  assert.ok(!sections.some(row => /Owner/.test(row.meta.label)), 'owner session stays in the normal session list');
 });

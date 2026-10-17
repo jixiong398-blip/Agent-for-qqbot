@@ -65,6 +65,7 @@ def install(root, home):
                    'node': str(relative(root, value['node'])), 'cli': str(relative(root, value['cli'])),
                    'source_fingerprint': source_fingerprint(), 'dsh_version': value['dsh_version'],
                    'portable_bundle_id': value['bundle_id'], 'portable_root': str(root), 'prebuilt': True}
+        atomic_json(runtime / 'INSTALL_RECEIPT.json', receipt)
         select_runtime(home, receipt)
         from .napcat import provision
         provision(home, relative(root, value['napcat']), value['napcat_version'])
@@ -73,9 +74,19 @@ def install(root, home):
     return home
 
 
+def version_key(value):
+    parts = []
+    for token in str(value or '').replace('-', '.').split('.'):
+        parts.append(int(token) if token.isdigit() else 0)
+    return tuple(parts[:4]) if parts else ()
+
+
 def ensure(root, home):
     value = json.loads((Path(root) / 'portable-manifest.json').read_text(encoding='utf-8'))
     selected = read_json(Path(home) / 'private/runtime.json', default={})
     if selected.get('portable_bundle_id') != value['bundle_id'] or selected.get('portable_root') != str(Path(root).resolve()):
+        previous = read_json(Path(home) / 'private/portable-install.json', default={})
+        if previous.get('version') and version_key(value.get('version')) < version_key(previous['version']):
+            raise ValueError('Refusing to select an older prebuilt version over the current install')
         return install(root, home)
     return Path(home)

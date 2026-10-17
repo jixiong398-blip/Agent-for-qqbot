@@ -7,7 +7,7 @@ $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 if (Test-Path (Join-Path $root 'portable-manifest.json')) {
     $bundled = Join-Path $root 'runtime\python\python.exe'
     if (-not (Test-Path $bundled)) { throw 'Bundled Python is missing. Extract the complete prebuilt package again.' }
-    & $bundled -I -B (Join-Path $PSScriptRoot 'portable_launcher.py') $Command @Extra
+    & $bundled -I -B (Join-Path $PSScriptRoot 'bootstrap.py') $Command @Extra
     exit $LASTEXITCODE
 }
 $candidates = @()
