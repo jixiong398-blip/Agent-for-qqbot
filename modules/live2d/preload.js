@@ -8,9 +8,11 @@ document.addEventListener('pointerdown', (e) => {
   window.__dragScreenY = e.screenY;
 }, true);
 document.addEventListener('pointerup', (e) => {
+  ipcRenderer.send('native-drag-end');
   window.__clickScreenX = e.screenX;
   window.__clickScreenY = e.screenY;
 }, true);
+window.addEventListener('blur', () => ipcRenderer.send('native-drag-end'));
 
 window.chrome = window.chrome || {};
 window.chrome.webview = {

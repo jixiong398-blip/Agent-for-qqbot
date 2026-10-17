@@ -1,5 +1,40 @@
 ﻿# bot-template 更新日志
 
+## 1.0.0 — 未发布（2026-10-17）
+
+- 将原生 DSH 架构移植升为 1.0 主线；旧 Hermes / 0.x 停更，保留历史版本和 tag，不恢复 fallback。
+- 默认 Web-only 首次体验，不再要求先登录 QQ；QQ / NapCat 必须显式启用。
+- 增加双脑模型复用、本地免 Key、模型列表读取、私有供应商方案及人格 Markdown 导入 / 预设切换。
+- 修复真实安装发现的 Windows 环境变量大小写、ACL bootstrap、POSIX venv 解释器识别和依赖锁覆盖问题。
+- 补齐被旧 ignore 规则遗漏的独立社交状态源码；增加跨平台安装、配置、权限与恢复回归测试。
+- Windows / WSL 真实验收仅使用新私有实例和本地模型；不连接真实 QQ、不改既有 DSH 配置。
+- 具体完成项与剩余门禁见 [MIGRATION.md](MIGRATION.md)；未提交、推送或发布。
+
+### 以下为历史记录：Hermes / 0.x 已停更
+
+## 未发布 — 跨平台安装与启动链路重构（2026-10-17）
+
+- 同一 GitHub 仓库改名 Agent-for-qqbot，更新产品链接与本地 GitHub remote；不上传迁移候选。
+- 统一 Windows/Linux 安装、配置、启动、停止和更新入口；完整固定 fork 构建、运行时选择与恢复回执。
+- 将账号、模型、供应入口、路径、端口、任务、字体与可选模块绑定移至私有配置。
+- 增加 Windows DACL/文件锁/Job Object 与鉴权回环适配，停止使用按端口杀进程和 root/systemd 设置应用。
+- 接入知识库、可选转写、隔离开发后端和 Live2D；安装/状态/控制入口不读取其他运行 home。
+- 新源码白名单打包入口不递归打包 NapCat 状态、运行依赖或个人数据；补齐原生插件 manifests/vendor 来源记录。
+- 未执行测试、安装、构建、服务、浏览器或模型/QQ 调用；仅静态检查，未发布，版本仍为 `0.14.16`。
+
+## 未发布 — 原生 DSH 源码迁移候选（2026-10-16）
+
+- 接收原生 DSH Host/Web、NapCat 通道、便签、来源化记忆与真实发送回执源码，
+  同步旧 Hermes 引擎和遗留 QQ 入口的删除项，保留原始归属声明。
+- 原生通道保持单 writer、final-only、群聊 self `@` 唤醒和权限隔离；历史回执记忆
+  索引后台恢复，不重发历史消息。面板附加密钥默认仍开启。
+- 当次保留 Windows 专用模块、脚本、配置模板和用户运行数据；后续入口重构见上一节。
+- 内部运维材料不进入公开候选；补充迁移限制与 MIT/GPL 组件归属说明。
+- 当次未运行测试、构建或部署，未提交/推送或发布；版本号仍为 `0.14.16`。
+  会话列表慢加载及 QQ 回复延迟未作优化，不宣称 Windows 原生部署已验证。
+
+详见 [MIGRATION.md](MIGRATION.md)。
+
 ## v0.14.16 (2026-09-05)
 
 ### Dashboard 与 NapCat 启动体验
@@ -208,12 +243,12 @@
 
 ### 仓库结构重构 — core/ 分层 + 局域网 git 同步
 
-- **引擎分层**：hermes/ 改为 `hermes/core/`（引擎权威，含 OneBot 插件），通过局域网 git（hermes-core.git）与服务器同步
+- **引擎分层**：hermes/ 改为 `hermes/core/`（当时的引擎源码，含 OneBot 插件），与分发模块分离维护
 - **根目录精简**：modules/（napcat/live2d/dashboard/knowledge）+ extras/（node/scripts/安装包/构建脚本）+ templates/ 独立于 hermes/，根目录只留安装脚本和文档
-- **同步机制**：服务器权威 → `git fetch && git checkout origin/main -- core/` 增量同步；modules/extras 由 Win 本地维护
+- **同步机制**：引擎源码与平台分发资源采用独立的维护边界
 - **脚本路径更新**：install.bat/update.bat/upgrade.py/setup_config.py/qzone-post.py 指向新结构（extras\node、modules\napcat、hermes\core）
-- **SSH 通道**：Win 端 SSH key 免密连接服务器（局域网 IP），替代不可靠的 Y 盘 SFTP
-- **git 追踪精简**：hermes/ 只追踪 core/ + .gitignore（局域网同步范围）
+- **传输维护**：调整内部源码接收方式，不影响用户配置与运行数据
+- **git 追踪精简**：引擎源码与运行资产分开管理
 
 ## v0.14.1 (2026-08-03)
 

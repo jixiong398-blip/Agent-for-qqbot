@@ -16,6 +16,7 @@ gateway.pid
 MAINTENANCE.md
 _*.py
 !__init__.py
+!__main__.py
 _*.bat
 _*.json
 release-notes.txt
@@ -48,10 +49,16 @@ hermes/.git/
 
 # 服务器运维更新日志（含实群/路径数据，只留本地，不进 GitHub）
 hermes/docs/UPDATE_LOG.md
+# Native DSH maintenance handoffs/diagnostics stay in the private receiver.
+/hermes/docs/
 
 # Live2D runtime files
 modules/live2d/live2d_pref.json
 modules/live2d/window_state.json
+.agent-for-qqbot/
+deployment.json
+*.egg-info/
+/dist/
 
 # installer bundles (in extras/)
 extras/electron-offline.zip.001
@@ -60,3 +67,8 @@ extras/electron-offline.zip.002
 # 维护者运维指南（含服务器信息，只留本地）
 AGENTS.md
 
+
+# Local tool artifacts (not product)
+.omo/
+.playwright-mcp/
+.pytest_cache/

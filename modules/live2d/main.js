@@ -8,22 +8,30 @@ const http = require('http');
 const https = require('https');
 const url = require('url');
 const koffi = require('koffi');
+const { authorized } = require('./control-auth');
 
 // ─── Native Windows Drag (matches WPF DragMove for frameless windows) ────────
-const _user32 = koffi.load('user32.dll');
-const _ReleaseCapture = _user32.func('bool ReleaseCapture()');
-const _SendMessageW = _user32.func('intptr_t SendMessageW(intptr_t, uint32_t, intptr_t, intptr_t)');
+const _user32 = process.platform === 'win32' ? koffi.load('user32.dll') : null;
+const _ReleaseCapture = _user32?.func('bool ReleaseCapture()');
+const _SendMessageW = _user32?.func('intptr_t SendMessageW(intptr_t, uint32_t, intptr_t, intptr_t)');
 const WM_SYSCOMMAND = 0x0112;
 const SC_MOVE = 0xF010;
 const HTCAPTION = 2;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 let mainWindow = null, settingsWindow = null, downloadWindow = null, httpServer = null, tray = null, hermesWs = null;
-const HTTP_PORT = 19919;
+const HTTP_PORT = Number(process.env.LIVE2D_PORT);
+if (!Number.isInteger(HTTP_PORT) || HTTP_PORT < 1 || HTTP_PORT > 65535 || !process.env.LIVE2D_CONTROL_KEY) {
+  throw Error('Start Live2D through the instance launcher (explicit port and control key required)');
+}
+const DATA_DIR = process.env.AGENT_QQBOT_HOME ? path.join(process.env.AGENT_QQBOT_HOME, 'live2d') : app.getPath('userData');
+fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+const CONFIG_FILE = path.join(DATA_DIR, 'conf.json');
 const ASSETS_DIR = path.join(__dirname, 'assets');
-const FIGURE_DIR = path.join(ASSETS_DIR, 'figure');
-const MODELS_DIR = path.join(ASSETS_DIR, 'models');
-const STATE_FILE = path.join(__dirname, 'window_state.json');
+const FIGURE_DIR = path.join(DATA_DIR, 'figure');
+const MODELS_DIR = process.env.LIVE2D_MODELS_DIR || path.join(DATA_DIR, 'models');
+fs.mkdirSync(MODELS_DIR, { recursive: true, mode: 0o700 });
+const STATE_FILE = path.join(DATA_DIR, 'window_state.json');
 const BASE_W = 460, BASE_H = 680;
 
 // ─── App State ──────────────────────────────────────────────────────────────
@@ -44,7 +52,7 @@ let _hitTestPending = false;
 
 // ─── Config & State Persistence ─────────────────────────────────────────────
 function loadConfig() {
-  try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'conf.json'), 'utf8')); }
+  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); }
   catch { return {}; }
 }
 
@@ -98,15 +106,20 @@ function startHttpServer() {
   };
 
   httpServer = http.createServer((req, res) => {
+    if (req.headers.host !== `127.0.0.1:${HTTP_PORT}`) { res.writeHead(403); res.end(); return; }
     const parsed = url.parse(req.url, true);
-    const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
+    const headers = { 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' };
+    if (['/cmd', '/screenshot', '/api/models', '/api/model'].includes(parsed.pathname) && !authorized(req, httpServer)) {
+      res.writeHead(401, headers); res.end(); return;
+    }
 
     if (req.method === 'OPTIONS') { res.writeHead(204, headers); res.end(); return; }
 
     // POST /cmd
     if (parsed.pathname === '/cmd' && req.method === 'POST') {
       let body = '';
-      req.on('data', c => body += c);
+      let size = 0;
+      req.on('data', c => { size += c.length; if (size > 64 * 1024) req.destroy(); else body += c; });
       req.on('end', () => {
         try {
           const data = JSON.parse(body);
@@ -118,7 +131,7 @@ function startHttpServer() {
             } else if (data.type === 'switch_model') {
               // Convert switch_model → loadModel with correct URL
               const { character, costume } = data;
-              if (character && costume) {
+              if (scanModels()[character]?.includes(costume)) {
                 const modelDir = path.join(MODELS_DIR, character, costume);
                 if (fs.existsSync(modelDir)) {
                   const modelFile = fs.readdirSync(modelDir).find(f => f.endsWith('.model3.json')) || '';
@@ -176,6 +189,7 @@ function startHttpServer() {
     if (parsed.pathname === '/api/model') {
       const char = parsed.query.character;
       const costume = parsed.query.costume;
+      if (!scanModels()[char]?.includes(costume)) { res.writeHead(404, headers); res.end(); return; }
       const modelDir = path.join(MODELS_DIR, char, costume);
       let modelFile = '';
       if (fs.existsSync(modelDir) && fs.statSync(modelDir).isDirectory()) {
@@ -191,6 +205,10 @@ function startHttpServer() {
     if (parsed.pathname.startsWith('/assets/models/')) filePath = path.join(MODELS_DIR, parsed.pathname.replace('/assets/models/', ''));
     else if (parsed.pathname.startsWith('/assets/figure/')) filePath = path.join(FIGURE_DIR, parsed.pathname.replace('/assets/figure/', ''));
     else if (parsed.pathname.startsWith('/assets/')) filePath = path.join(ASSETS_DIR, parsed.pathname.replace(/^\/assets\//, ''));
+    else if (parsed.pathname.startsWith('/ui/')) filePath = path.join(__dirname, 'renderer', parsed.pathname.slice(4));
+    const base = parsed.pathname.startsWith('/assets/models/') ? MODELS_DIR : parsed.pathname.startsWith('/assets/figure/') ? FIGURE_DIR : parsed.pathname.startsWith('/ui/') ? path.join(__dirname, 'renderer') : ASSETS_DIR;
+    const relative = filePath && path.relative(path.resolve(base), path.resolve(filePath));
+    if (!filePath || !relative || relative.startsWith('..') || path.isAbsolute(relative)) { res.writeHead(404, headers); res.end(); return; }
 
     if (!filePath || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
       if (filePath && filePath.endsWith('model3.json')) {
@@ -206,6 +224,8 @@ function startHttpServer() {
     }
 
     const ext = path.extname(filePath).toLowerCase();
+    const realRelative = path.relative(fs.realpathSync(base), fs.realpathSync(filePath));
+    if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) { res.writeHead(403, headers); res.end(); return; }
     res.writeHead(200, { ...headers, 'Content-Type': mimeMap[ext] || 'application/octet-stream' });
     fs.createReadStream(filePath).pipe(res);
   });
@@ -226,7 +246,7 @@ function applyAppState() {
   // Streaming mode: show in taskbar so OBS can detect the window
   if (appState.streamingMode) {
     mainWindow.setSkipTaskbar(false);
-    mainWindow.setTitle('Hermes Live2D (Stream)');
+    mainWindow.setTitle('Bot Live2D (Stream)');
   } else {
     mainWindow.setSkipTaskbar(true);
     mainWindow.setTitle('Live2D Desktop Pet');
@@ -274,148 +294,82 @@ function createDownloadWindow() {
 }
 
 // ─── Settings IPC (invoke → handle for async support) ────────────────────────
-ipcMain.handle('settings-load', async () => {
+function settingsView() {
   const config = loadConfig();
-  return {
-    ...appState,
-    character: config.character || 'rana',
-    costume: config.costume || 'live_01',
-    followFps: appState.followFps,
-    hermesPort: config.hermesPort || 9190,
-    startupSound: config.startupSound !== false,
-    audioVolume: config.audioVolume ?? 60,
-    version: config.version || '1.1.4',
-  };
-});
-
-ipcMain.handle('settings-set', async (_e, key, value) => {
+  return { ...appState, character: config.character || '', costume: config.costume || '',
+    hermesPort: HTTP_PORT, startupSound: config.startupSound !== false,
+    audioVolume: config.audioVolume ?? 60, version: require('./package.json').version };
+}
+function settingsSet(key, value) {
   const config = loadConfig();
-  switch (key) {
-    case 'alwaysOnTop': appState.alwaysOnTop = value; break;
-    case 'clickThrough': appState.clickThrough = value; break;
-    case 'streamingMode': appState.streamingMode = value; break;
-    case 'mouseFollow': appState.mouseFollow = value; if (!value) stopMouseFollow(); else if (appState.followFps > 0) startMouseFollow(); break;
-    case 'rememberPosition': appState.rememberPosition = value; break;
-    case 'startupSound': config.startupSound = value; fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2)); break;
-    case 'audioVolume': config.audioVolume = value; fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2)); break;
-    case 'maxFPS': appState.maxFPS = value; break;
-    case 'followFps': appState.followFps = value; config.followFps = value; fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2)); break;
-    case 'sizePercent': appState.sizePercent = value; break;
-    case 'hermesPort': config.hermesPort = value; fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2)); break;
-  }
-  applyAppState();
-  saveWindowState(appState);
-  if (tray) tray.setContextMenu(buildTrayMenu());
-  if (hermesWs) hermesWs.broadcast({ type: 'state', settings: appState });
-  return { ok: true };
-});
-
-ipcMain.handle('settings-reset', async () => {
-  appState.clickThrough = false; appState.alwaysOnTop = true; appState.mouseFollow = true;
-  appState.maxFPS = 0; appState.sizePercent = 100; appState.followFps = 30;
-  appState.rememberPosition = true; appState.streamingMode = false;
+  const booleans = ['alwaysOnTop', 'clickThrough', 'streamingMode', 'mouseFollow', 'rememberPosition'];
+  if (booleans.includes(key)) {
+    if (typeof value !== 'boolean') throw Error('Boolean setting required');
+    appState[key] = value;
+  } else if (['maxFPS', 'followFps', 'sizePercent'].includes(key)) {
+    if (!Number.isFinite(value) || value < 0 || value > 500) throw Error('Invalid bounded display setting');
+    appState[key] = value;
+    if (key === 'followFps') { config.followFps = value; fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2)); }
+  } else if (key === 'startupSound' || key === 'audioVolume') {
+    if (key === 'startupSound' ? typeof value !== 'boolean' : !Number.isFinite(value) || value < 0 || value > 100) throw Error('Invalid audio setting');
+    config[key] = value; fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  } else if (key !== 'hermesPort') throw Error('Unsupported display setting');
+  // Listening ports cannot be mutated through renderer IPC.
+  stopMouseFollow(); if (appState.mouseFollow && appState.followFps > 0) startMouseFollow();
   applyAppState(); saveWindowState(appState);
-  const config = loadConfig();
-  config.startupSound = true; config.audioVolume = 60; config.followFps = 30;
-  fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2));
   if (tray) tray.setContextMenu(buildTrayMenu());
-  return { ok: true };
-});
-
-ipcMain.handle('ws-restart', async () => {
-  if (hermesWs) { hermesWs.destroy(); hermesWs = null; }
-  try {
-    const { startHermesWsServer } = require('./hermes-ws');
-    hermesWs = startHermesWsServer(mainWindow, httpServer, loadConfig());
-    return { ok: true };
-  } catch (e) { return { error: e.message }; }
-});
-
-// ─── Legacy Settings IPC (on/sendSync for backward compat) ────────────────────
-ipcMain.on('get-settings', (e) => {
-  const config = loadConfig();
-  e.returnValue = {
-    ...appState,
-    character: config.character || 'mutsumi',
-    costume: config.costume || 'casual_spring_01',
-    followFps: appState.followFps,
-    hermesPort: config.hermesPort || 9190,
-    startupSound: config.startupSound !== false,
-    audioVolume: config.audioVolume ?? 60,
-    version: config.version || '1.1.4',
-  };
-});
-
-ipcMain.on('set-setting', (_e, key, value) => {
-  const config = loadConfig();
-  switch (key) {
-    case 'alwaysOnTop': appState.alwaysOnTop = value; break;
-    case 'clickThrough': appState.clickThrough = value; break;
-    case 'streamingMode': appState.streamingMode = value; break;
-    case 'mouseFollow': appState.mouseFollow = value; if (!value) stopMouseFollow(); else if (appState.followFps > 0) startMouseFollow(); break;
-    case 'rememberPosition': appState.rememberPosition = value; break;
-    case 'startupSound': config.startupSound = value; fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2)); break;
-    case 'audioVolume': config.audioVolume = value; fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2)); break;
-    case 'maxFPS': appState.maxFPS = value; break;
-    case 'followFps': appState.followFps = value; config.followFps = value; fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2)); break;
-    case 'sizePercent': appState.sizePercent = value; break;
-    case 'hermesPort': config.hermesPort = value; fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2)); break;
-  }
-  applyAppState();
-  saveWindowState(appState);
-  if (tray) tray.setContextMenu(buildTrayMenu());
-  // Sync to Hermes
   if (hermesWs) hermesWs.broadcast({ type: 'state', settings: appState });
-});
-
-ipcMain.on('reset-settings', () => {
-  appState.clickThrough = false;
-  appState.alwaysOnTop = true;
-  appState.mouseFollow = true;
-  appState.maxFPS = 0;
-  appState.sizePercent = 100;
-  appState.followFps = 30;
-  appState.rememberPosition = true;
-  appState.streamingMode = false;
-  applyAppState();
-  saveWindowState(appState);
-  const config = loadConfig();
-  config.startupSound = true;
-  config.audioVolume = 60;
-  config.followFps = 30;
-  fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2));
+  return { ok: true };
+}
+function settingsReset() {
+  Object.assign(appState, {clickThrough:false, alwaysOnTop:true, mouseFollow:true, maxFPS:0,
+    sizePercent:100, followFps:30, rememberPosition:true, streamingMode:false});
+  const config = loadConfig(); Object.assign(config, {startupSound:true, audioVolume:60, followFps:30});
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2)); applyAppState(); saveWindowState(appState);
   if (tray) tray.setContextMenu(buildTrayMenu());
-});
-
-ipcMain.on('restart-ws', () => {
-  if (hermesWs) { hermesWs.close(); hermesWs = null; }
-  const config = loadConfig();
-  try {
-    const { startHermesWsServer } = require('./hermes-ws');
-    hermesWs = startHermesWsServer(mainWindow, httpServer, config);
-    console.log('[Live2D] Hermes WS restarted');
-  } catch (e) { console.error('[Live2D] Failed to restart WS:', e.message); }
-});
+  return {ok:true};
+}
+function restartBridge() {
+  if (hermesWs) hermesWs.destroy();
+  hermesWs = require('./hermes-ws').startHermesWsServer(mainWindow, httpServer, loadConfig());
+  return {ok:true};
+}
+ipcMain.handle('settings-load', settingsView);
+ipcMain.handle('settings-set', (_event, key, value) => settingsSet(key, value));
+ipcMain.handle('settings-reset', settingsReset);
+ipcMain.handle('ws-restart', restartBridge);
+ipcMain.on('get-settings', event => { event.returnValue = settingsView(); });
+ipcMain.on('set-setting', (_event, key, value) => settingsSet(key, value));
+ipcMain.on('reset-settings', settingsReset);
+ipcMain.on('restart-ws', restartBridge);
 
 // ─── Download IPC ────────────────────────────────────────────────────────────
+const roleCatalogue = new Map();
+function safeRoleId(value) { return typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,139}$/.test(value); }
 ipcMain.on('download-get-roles', async (e) => {
   try {
     const https_mod = require('https');
-    const manifestUrl = 'https://cucumbervpet.sevenvoxel.com/manifest.json';
+    const manifestUrl = process.env.LIVE2D_MANIFEST_URL;
+    const source = new URL(manifestUrl);
+    if (source.protocol !== 'https:' || source.username || source.password || source.search || source.hash) throw Error('Configure a clean HTTPS model manifest URL');
     const data = await new Promise((resolve, reject) => {
       https_mod.get(manifestUrl, (res) => {
+        if (res.statusCode !== 200) { res.resume(); reject(Error('Model manifest request failed')); return; }
         let body = '';
-        res.on('data', c => body += c);
+        res.on('data', c => { body += c; if (Buffer.byteLength(body) > 2 * 1024 * 1024) { res.destroy(); reject(Error('Model manifest too large')); } });
         res.on('end', () => resolve(body));
-      }).on('error', reject);
+      }).on('error', reject).setTimeout(30000, function () { this.destroy(Error('Model manifest timed out')); });
     });
     const manifest = JSON.parse(data.startsWith('\uFEFF') ? data.slice(1) : data);
     const config = loadConfig();
     const mainChars = new Set(config.mainCharacters || []);
     const subChars = new Set(config.subCharacters || []);
-    const modelsDir = path.join(__dirname, 'assets', 'models');
+    const modelsDir = MODELS_DIR;
 
-    const roles = (manifest.roles || []).map(r => {
+    const roles = (manifest.roles || []).filter(r => safeRoleId(r.id) && /^[a-fA-F0-9]{64}$/.test(r.sha256 || '')).map(r => {
+      const endpoint = new URL(r.url);
+      if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password) throw Error('Unsafe model archive URL');
+      roleCatalogue.set(r.id, r);
       const parts = r.id.split('_');
       const char = parts[0];
       const costume = parts.slice(1).join('_');
@@ -438,26 +392,35 @@ ipcMain.on('download-get-roles', async (e) => {
 
 ipcMain.on('download-start', async (e, roleId, url) => {
   try {
-    const downloadsDir = path.join(__dirname, 'downloads');
+    const role = roleCatalogue.get(roleId);
+    if (!safeRoleId(roleId) || !role || role.url !== url) throw Error('Choose an archive from the current verified manifest');
+    const downloadsDir = path.join(DATA_DIR, 'downloads');
     if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir, { recursive: true });
     const filePath = path.join(downloadsDir, roleId + '.cvpkg');
 
     const https_mod = require('https');
-    const file = fs.createWriteStream(filePath);
+    if (fs.existsSync(filePath)) throw Error('Archive already downloaded; install it or remove it explicitly');
+    const file = fs.createWriteStream(filePath, {flags:'wx', mode:0o600});
+    const hash = require('crypto').createHash('sha256');
     let downloaded = 0;
 
     await new Promise((resolve, reject) => {
       https_mod.get(url, (res) => {
+        if (res.statusCode !== 200) { res.resume(); file.destroy(); reject(Error('Model archive request failed')); return; }
         const total = parseInt(res.headers['content-length'] || '0');
         res.on('data', (chunk) => {
           downloaded += chunk.length;
+          if (downloaded > 256 * 1024 * 1024) { res.destroy(); file.destroy(); reject(Error('Model archive too large')); return; }
+          hash.update(chunk);
           if (e.sender && !e.sender.isDestroyed()) {
             e.sender.send('download-progress', { roleId, percent: total > 0 ? Math.round(downloaded / total * 100) : 0, downloaded, total, status: 'downloading' });
           }
         });
         res.pipe(file);
-        file.on('finish', () => { file.close(); resolve(); });
-      }).on('error', reject);
+        file.on('error', reject);
+        res.on('error', reject);
+        file.on('finish', () => { file.close(() => hash.digest('hex') === role.sha256.toLowerCase() ? resolve() : reject(Error('Model archive hash mismatch; do not install'))); });
+      }).on('error', reject).setTimeout(120000, function () { this.destroy(Error('Model download timed out')); });
     });
 
     if (e.sender && !e.sender.isDestroyed()) {
@@ -473,12 +436,15 @@ ipcMain.on('download-start', async (e, roleId, url) => {
 
 ipcMain.on('download-install', async (e, roleId) => {
   try {
+    if (!safeRoleId(roleId) || !roleCatalogue.has(roleId)) throw Error('Load the model manifest before installation');
     const parts = roleId.split('_');
     const character = parts[0];
     const costume = parts.slice(1).join('_');
-    const cvpkgPath = path.join(__dirname, 'downloads', roleId + '.cvpkg');
-    const outputDir = path.join(__dirname, 'assets', 'models', character, costume);
-    const decryptScript = path.join(process.env.USERPROFILE, '.config', 'opencode', 'skills', 'cvpkg-decrypt', 'decrypt_cvpkg.py');
+    const cvpkgPath = path.join(DATA_DIR, 'downloads', roleId + '.cvpkg');
+    const outputDir = path.join(MODELS_DIR, character, costume);
+    const decryptScript = process.env.LIVE2D_DECRYPT_SCRIPT;
+    if (!costume || !decryptScript || !process.env.SOYO_PYTHON || fs.existsSync(outputDir)) throw Error('Explicit decryptor required; existing model directories are never overwritten');
+    if (require('crypto').createHash('sha256').update(fs.readFileSync(cvpkgPath)).digest('hex') !== roleCatalogue.get(roleId).sha256.toLowerCase()) throw Error('Archive bytes do not match the manifest');
 
     if (!fs.existsSync(cvpkgPath)) {
       if (e.sender) e.sender.send('download-progress', { roleId, status: 'error', error: 'Download file not found' });
@@ -489,7 +455,7 @@ ipcMain.on('download-install', async (e, roleId) => {
     if (e.sender) e.sender.send('download-progress', { roleId, status: 'installing' });
 
     await new Promise((resolve, reject) => {
-      execFile('python', [decryptScript, '-o', outputDir, cvpkgPath], (err, stdout, stderr) => {
+      execFile(process.env.SOYO_PYTHON, ['-B', decryptScript, '-o', outputDir, cvpkgPath], {timeout:120000, windowsHide:true}, (err, stdout, stderr) => {
         if (err) reject(new Error(stderr || err.message));
         else resolve(stdout);
       });
@@ -507,20 +473,9 @@ ipcMain.on('download-install', async (e, roleId) => {
 
 // ─── Update Check ────────────────────────────────────────────────────────────
 async function checkForUpdates(silent = true) {
-  try {
-    const https_mod = require('https');
-    const manifestUrl = 'https://cucumbervpet.sevenvoxel.com/manifest.json';
-    // In production, this would check a version endpoint
-    // For now, check if the manifest has changed since last fetch
-    console.log('[Live2D] Update check (placeholder)');
-    if (!silent) {
-      dialog.showMessageBox(mainWindow, {
-        type: 'info', title: '检查更新',
-        message: '当前版本 v1.1.4 已是最新',
-        detail: 'CucumberVPet v1.1.4 (port from WPF to Electron)',
-      });
-    }
-  } catch (e) { console.error('[Live2D] Update check error:', e.message); }
+  if (!silent) await dialog.showMessageBox(mainWindow, {type:'info', title:'本地版本',
+    message:'Live2D ' + require('./package.json').version,
+    detail:'未进行远程版本探测。请使用 Agent-for-qqbot 的源码/运行时更新流程；本地版本不代表已是最新。'});
 }
 
 // ─── Mouse Follow (cursor tracking + look + hit-test cache) ─────────────────
@@ -574,8 +529,8 @@ function stopMouseFollow() {
 // ─── Tray Menu ──────────────────────────────────────────────────────────────
 function buildTrayMenu() {
   const config = loadConfig();
-  const curChar = config.character || 'mutsumi';
-  const curCostume = config.costume || 'casual_spring_01';
+  const curChar = config.character || '';
+  const curCostume = config.costume || '';
   const cat = scanModelsCategorized();
 
   const charSubmenu = [];
@@ -641,7 +596,7 @@ function buildTrayMenu() {
 function switchModel(character, costume) {
   const config = loadConfig();
   config.character = character; config.costume = costume;
-  fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2));
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
   if (mainWindow && !mainWindow.isDestroyed()) {
     // Find model file and send loadModel message (same as WPF host)
     const modelDir = path.join(MODELS_DIR, character, costume);
@@ -660,15 +615,15 @@ function switchModel(character, costume) {
 }
 
 function setFPS(fps) { appState.maxFPS = fps; applyAppState(); saveWindowState({ maxFPS: fps }); if (tray) tray.setContextMenu(buildTrayMenu()); }
-function setFollowFps(fps) { appState.followFps = fps; const c = loadConfig(); c.followFps = fps; fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(c, null, 2)); stopMouseFollow(); if (fps > 0) startMouseFollow(); if (tray) tray.setContextMenu(buildTrayMenu()); }
+function setFollowFps(fps) { appState.followFps = fps; const c = loadConfig(); c.followFps = fps; fs.writeFileSync(CONFIG_FILE, JSON.stringify(c, null, 2)); stopMouseFollow(); if (fps > 0) startMouseFollow(); if (tray) tray.setContextMenu(buildTrayMenu()); }
 function setWindowSize(percent) { appState.sizePercent = percent; const w = Math.round(BASE_W * percent / 100), h = Math.round(BASE_H * percent / 100); if (mainWindow && !mainWindow.isDestroyed()) { const [x, y] = mainWindow.getPosition(); mainWindow.setBounds({ x, y, width: w, height: h }); } saveWindowState({ sizePercent: percent }); if (tray) tray.setContextMenu(buildTrayMenu()); }
 
 // ─── Window Creation ────────────────────────────────────────────────────────
 function createWindow() {
   const config = loadConfig();
-  let character = config.character || 'mutsumi';
-  let costume = config.costume || 'casual_spring_01';
-  const wsPort = config.wsPort || 9190;
+  let character = config.character || '';
+  let costume = config.costume || '';
+  const wsPort = HTTP_PORT;
   const W = Math.round(BASE_W * appState.sizePercent / 100);
   const H = Math.round(BASE_H * appState.sizePercent / 100);
 
@@ -676,7 +631,7 @@ function createWindow() {
   const models = scanModels();
   if (!models[character] || !models[character].includes(costume)) {
     const first = Object.keys(models)[0];
-    if (first) { character = first; costume = models[first][0]; config.character = character; config.costume = costume; fs.writeFileSync(path.join(__dirname, 'conf.json'), JSON.stringify(config, null, 2)); }
+    if (first) { character = first; costume = models[first][0]; config.character = character; config.costume = costume; fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2)); }
   }
 
   // Load saved state
@@ -715,7 +670,12 @@ function createWindow() {
   const modelUrl = modelFile ? `${ASSETS_DIR.replace(/\\/g,'/')}/models/${character}/${costume}/${modelFile}` : '';
   const httpModelUrl = modelFile ? `http://127.0.0.1:${HTTP_PORT}/assets/models/${character}/${costume}/${modelFile}` : '';
 
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { character, costume, wsPort: String(wsPort), modelUrl: httpModelUrl } });
+  const params = new URLSearchParams({ character, costume, wsPort: String(wsPort), modelUrl: httpModelUrl });
+  mainWindow.loadURL(`http://127.0.0.1:${HTTP_PORT}/ui/index.html?${params}`);
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, address) => {
+    if (new URL(address).origin !== `http://127.0.0.1:${HTTP_PORT}`) event.preventDefault();
+  });
 
   mainWindow.webContents.on('console-message', (_e, _l, msg) => {
     if (!msg || msg.includes('%c') || msg.includes('Security') || msg.includes('CSM') || msg.includes('pixi') || msg.includes('WebGL') || msg.trim() === '') return;
@@ -769,10 +729,22 @@ ipcMain.on('right-click', (_e, data) => {
 // Pixel-level drag: renderer.js gates with isCharacterHit() before post("drag").
 // WM_SYSCOMMAND SC_MOVE works for frameless windows (no WS_CAPTION needed).
 // Coordinates DPI-scaled from CSS→physical pixels.
+let portableDrag = null;
+ipcMain.on('native-drag-end', () => { clearInterval(portableDrag); portableDrag = null; });
 ipcMain.on('native-drag', (e, data) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     try {
-      const hwnd = mainWindow.getNativeWindowHandle().readInt32LE(0);
+      if (process.platform !== 'win32') {
+        const initial = screen.getCursorScreenPoint(), [left, top] = mainWindow.getPosition();
+        clearInterval(portableDrag);
+        portableDrag = setInterval(() => {
+          if (!mainWindow || mainWindow.isDestroyed()) { clearInterval(portableDrag); return; }
+          const point = screen.getCursorScreenPoint(); mainWindow.setPosition(left + point.x - initial.x, top + point.y - initial.y);
+        }, 16);
+        e.returnValue = true; return;
+      }
+      const handle = mainWindow.getNativeWindowHandle();
+      const hwnd = handle.length === 8 ? Number(handle.readBigUInt64LE(0)) : handle.readUInt32LE(0);
       const scale = screen.getPrimaryDisplay().scaleFactor || 1;
       const sx = Math.round(((data && data.screenX) ? data.screenX : screen.getCursorScreenPoint().x) * scale);
       const sy = Math.round(((data && data.screenY) ? data.screenY : screen.getCursorScreenPoint().y) * scale);

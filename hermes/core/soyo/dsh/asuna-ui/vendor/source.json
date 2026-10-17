@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/eamars/AsunaCognitionCore",
+  "commit": "4b4ddfa0a56b288e85fb22dd9a2a6db80f532abc",
+  "source_path": "packages/cognition-core/src/client.js",
+  "license": "GPL-3.0-only",
+  "client_sha256": "3e22b368f029c970ca63739e43c52b0635f2016d98c9e3c1c1e22ed5bc9ddccd",
+  "upstream_raw_sha256": "8cb41c18f8c22ae6f8ca735d77215cc2113384bcb6e49a0d935490a07d04ca21",
+  "retained_vendor_transformations": ["LF converted to CRLF", "Trailing spaces removed from otherwise blank upstream lines 106 and 253"],
+  "implementation_changes_in_vendor": false
+}

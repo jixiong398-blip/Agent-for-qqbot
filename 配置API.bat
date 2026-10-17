@@ -1,13 +1,9 @@
-﻿@echo off
-chcp 65001 >nul
+@echo off
+chcp 65001 >nul 2>nul
 set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
 cd /d "%~dp0"
-
-if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] venv not found - run install.bat first
-    pause
-    exit /b 1
-)
-
-.venv\Scripts\python extras\scripts\setup_config.py
-pause
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0extras\scripts\bootstrap.ps1" configure --web %*
+set "RESULT=%ERRORLEVEL%"
+if not "%RESULT%"=="0" pause
+exit /b %RESULT%

@@ -1,131 +1,42 @@
-﻿# USER_AGENTS.md — QQ 机器人 agent 操作指南（面向用户）
+# Agent-for-qqbot：用户 AI 操作指南
 
-> 本文件给 **AI agent（OpenCode / Cursor / Claude Code 等）** 看，帮助你安装、配置、运行这个 QQ 群 AI 机器人模板。
-> 本文件不含任何维护者/服务器内部信息，用户可安全使用。
+先读 [README.md](README.md)、[MIGRATION.md](MIGRATION.md) 与
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。当前是未发布的 **1.0.0** 原生 DSH 主线；旧 Hermes / 0.x 停更。
 
----
+## 入口与数据边界
 
-## 这是什么
+- 唯一统一入口：`extras/scripts/bootstrap.py` → `soyo.app`；根 bat/sh 是薄封装。
+- 默认实例目录为用户主目录下 `.agent-for-qqbot`，可用 `AGENT_QQBOT_HOME` 指定源码目录之外的新目录。
+- 不指向已有 Hermes home，不从其他部署猜账号、端口、供应商、模型、Key 或 persona。
+- 普通用户使用预构建包：`install` 不装依赖、不编译，直接打开原生 DSH；模型、人格、NapCat 均在 DSH 内配置。
+  只有维护者使用源码构建固定 fork。不要把编译 / 打包成功称为 QQ 或发布验收。
+- 配置用私有 `deployment.json` 与 `persona/`，示例在 `templates/`；不要提交真实内容。
+  模型可分脑配置或复用，支持私有命名供应商方案与人格预设；本地免 Key 必须显式选择且仅限回环。
+- 产品默认称呼 Bot，名字与人格由使用者自取；不把内部 `soyo` 包 / 工具 ID 解释为默认人物。
+  全部公开模板看 `templates/README.md`；旧 `hermes/templates/` 只保留指引，不自动导入。
+- 用户产品只绑定本机回环，不依赖远程组网软件；维护者的远程管理不属于安装步骤。
+  原生入口无额外 Bot Key 页，保留实际 TCP peer、Host / Origin / CSRF 及内部凭据隔离。
+- 默认先只用 Web。仅在用户明确开启 QQ 后接入 NapCat；必须由用户扫码，OneBot listener 必须有 Token 且只绑定回环。
 
-开箱即用的 **QQ 群 AI 聊天机器人** 分发模板：
-- **LLM 对话引擎**：Hermes（魔改版），支持任意 OpenAI 兼容 API
-- **QQ 接入**：NapCat（OneBot v11 协议桥）
-- **桌面立绘**：Live2D 透明窗口（可选）
-- **Web 控制面板**：Dashboard（可选）
-- **记忆系统**：多层级（短期 / 长期 / 跨群联想 EPI）
-- **知识库**：Obsidian 文件夹全文检索（可选）
+## 可以根据用户授权操作
 
-## 快速开始
+`install`、`configure [--web]`、`start [--no-browser] [--no-autostart]`、`status`、`stop`、
+`update`、`rollback`、`recover-runtime`、`install-live2d`、`doctor`。
+Windows 通过相应 bat 或 bootstrap.ps1，Linux 通过 sh wrapper / Python 3.12+。
+更新前停止实例；配置命令不会自动执行服务/模型探测。`doctor` 不是测试套件。
 
-### 方式一：双击 install.bat（推荐）
+## 不要做
 
-**Windows 用户直接双击 `install.bat`**，自动完成：
-1. Python 3.12 检测/安装（离线）
-2. Node.js portable（Live2D 用）
-3. venv + pip 依赖
-4. 初始化 `~/.hermes/`（运行数据目录）
+- 不恢复 Hermes/OneBot 旧实现作为 fallback，不启动第二个 QQ writer。
+- 不运行已退休的 Linux root 安装器或旧 `UPGRADE_MAP` 双写流程。
+- 不按端口或进程名杀 QQ；仅管理本实例明确捕获的进程身份。
+- 不把内部 `host.root` 能力名解释为自动系统 root；默认是 workspace-write。
+- 不在没有隔离后端时直接运行行动脑候选代码；Docker 必须使用显式镜像 digest。
+- 不把旧记录、回合结束、建议、操作已接受或配置已保存当成平台效果/验收完成。
+- 不把 venv、node_modules、NapCat 账号配置、数据库、日志、knowledge vault 或私有 home 打进源码包。
 
-### 方式二：agent 手动执行
+## 当前验收状态
 
-```powershell
-# 1. 创建运行目录
-python extras/scripts/install.py
-
-# 2. 检查 ~/.hermes/.env 已生成（核心变量）
-#    - ONEBOT_SELF_ID: bot 的 QQ 号（登录后可在 Dashboard 的 QQ 连接中选择，自动写入）
-#    - ONEBOT_ADMIN_ID: 管理员 QQ 号
-#    - DEEPSEEK_API_KEY: LLM API Key
-#    - ONEBOT_BOT_NAME: 角色名（通常已自动提取）
-
-# 3. 配置 LLM（或用 配置API.bat 交互式）
-python extras/scripts/setup_config.py
-```
-
-## 安装后必须用户手动完成（agent 无法代办）
-
-1. **启动 NapCat 扫码登录**（`modules\napcat\napcat.bat`）——登录哪个账号，Dashboard 就能发现哪个账号配置
-2. **配置 NapCat 端口**：登录后打开 `http://127.0.0.1:8899`，按引导配置 WS:3001 / HTTP:3000
-3. 运行 `配置API.bat` 填 LLM API Key + 管理员 QQ
-4. 运行 `start.bat` 一键启动 Dashboard，在“QQ 连接”里选择当前 NapCat 账号；切换账号后重启 Hermes 网关生效
-
-> NapCat 会按登录账号生成 `onebot11_<QQ>.json`。Hermes 只在本机回环配置下自动读取对应 token，不把 token 返回给 Dashboard；多账号/多实例编排暂不启用。
-
-## 创建角色灵魂（必须）
-
-1. 阅读 `templates\SOUL-template.md` 参考格式
-2. 让 AI 基于模板写出你想要的角色（或让 agent 帮你生成）
-3. 保存为 `templates\SOUL.md`
-4. 重跑 `配置API.bat` → 角色名从 SOUL.md 自动提取并同步到 .env（无需手动改）
-
-> **SOUL.md 必须含 `## 称呼` 节**（正式名 + 别名列表）——否则名字直呼识别（v0.14.13）失效：
->
-> ```
-> ## 称呼
-> 正式名：你的角色名
-> 别名：名字1, 名字2, 小名, ...
-> ```
-
-## 运行
-
-```
-① 启动 NapCat 扫码登录（modules\napcat\napcat.bat）
-② start.bat → Dashboard 启动 → QQ 连接中选择当前账号 → 启动 Hermes 网关
-```
-
-## 更新
-
-已有旧版本？双击 `update.bat` 自动升级（保护 config.yaml / SOUL.md / .env 不被覆盖）。
-
-## 默认配置值（~/.hermes/.env）
-
-| 变量 | 必填 | 说明 |
-|---|---|---|
-| `ONEBOT_SELF_ID` | ✅ | Bot 的 QQ 号 |
-| `ONEBOT_ADMIN_ID` | ✅ | 管理员 QQ 号 |
-| `DEEPSEEK_API_KEY` | ✅ | LLM API Key |
-| `DEEPSEEK_BASE_URL` | ✅ | LLM API 地址 |
-| `DEEPSEEK_MODEL` | ✅ | 模型名 |
-| `ONEBOT_BOT_NAME` | ✅ | 角色名 |
-| `ONEBOT_WS_URL` | | NapCat WS（默认 ws://127.0.0.1:3001/） |
-| `ONEBOT_HTTP_URL` | | NapCat HTTP（默认 http://127.0.0.1:3000） |
-| `ONEBOT_AUTO_DISCOVER_TOKEN` | | 是否自动使用当前登录账号的 NapCat token（默认 true） |
-| `OBSIDIAN_VAULT_PATH` | | 知识库文件夹路径（默认为项目内 modules/knowledge） |
-
-## 思考强度与模型方言
-
-`配置API.bat` 会让你选择**思考强度**（reasoning effort）：
-
-| 档位 | 说明 |
-|---|---|
-| off | 关闭思考，响应最快 |
-| minimal / low / medium / high / xhigh | 思考深度递增（xhigh 仅部分模型支持） |
-
-- 统一语义：无论哪家供应商，档位含义一致，引擎自动翻译成该端点的参数格式
-- 写入 `~/.hermes/config.yaml` 的 `agent.reasoning_effort`，可随时手动改
-
-**本地部署 / 自定义端点**（provider=custom）额外支持：
-
-```yaml
-model:
-  thinking_dialect: auto   # 思考参数方言: qwen|ollama|openai|kimi|auto(按模型名/URL猜)|空=不发送
-  ollama_num_ctx: 32768    # Ollama 上下文窗口（可选）
-```
-
-> 方言指不同推理后端表达"开/关思考"的 API 形状差异；auto 能识别 Qwen 和 Ollama，
-> 其他端点选对 dialect 或留空（不发送 = 用端点默认行为）。
-## 常见问题排查
-
-| 症状 | 检查 |
-|---|---|
-| Bot 不回复 | `~/.hermes/logs/gateway.log` 有无 ImportError/Judge 报错；确认 ONEBOT_SELF_ID 已填 |
-| 群聊 @ 了不回 | 确认 ONEBOT_BOT_NAME + SOUL「称呼」节已设置 |
-| 名字直呼不回 | SOUL「称呼」节别名列表是否完整 |
-| 图片识别失败 | 检查 vision API 配置 |
-| Live2D 不显示 | modules/live2d 依赖装好；Dashboard 8899 端口未被占用 |
-
-## 安全提示
-
-- `.env`、`config.yaml`、`SOUL.md`、`*.db`、`sessions/`、`logs/` 含你的私密数据（QQ 号、API Key），**永不提交到任何 git 仓库**
-- 修改角色：只编辑 `templates\SOUL.md`（模板）或 `~\.hermes\SOUL.md`（运行时），不要动代码
-
-
+新授权已覆盖此前仅静态检查的约束；Windows / WSL 独立实例安装、原生 Web、双脑本地模型回合和重启恢复已验证。
+真实 QQ、外部发送和用户原有部署不在此次验证范围。具体通过项和未验证项以 MIGRATION 为准。
+GitHub 仓库已改名为 Agent-for-qqbot；当前仅 README 获得文档更新授权，整套源码没有提交、推送、打 tag、Release 或部署授权。

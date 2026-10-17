@@ -1,365 +1,52 @@
-﻿# 升级指南
-
-> v0.14.16
-
-## v0.14.16 变更说明
-
-- Dashboard 重构为更紧凑的运维控制台，保留服务、NapCat、日志、记忆、会话和 Live2D 操作。
-- NapCat 启动增加目录、启动脚本和普通 QQ 进程预检，并提供启动状态、端口就绪和结构化错误提示。
-- Windows 用户遇到启动失败时，先退出普通 QQ，确认 QQ.exe 完全结束，再从 Dashboard 启动 NapCat；系统不会自动结束用户进程。
-- 修复 Dashboard 移动端布局横向溢出，并将 `onboarding.html` 纳入升级文件映射。
-
-本版本不覆盖 `config.yaml`、`SOUL.md`、`.env`、数据库、sessions 或日志。升级前请保留本地配置，并检查自定义补丁是否与 Dashboard/NapCat 文件冲突。
-
-## v0.14.15 变更说明
-
-- OneBot completion contract 在后续用户消息已到达时不再触发错误的合成重试，避免重复 agent 轮次。
-- Feishu WebSocket 运行时参数改为实例级隔离，不污染其他平台的 `websockets` 客户端。
-- 记忆、会话、环境工具和 turn 生命周期增加跨平台边界契约；升级后首次运行可能执行兼容性检查。
-- 知识库工具不再包含任何开发机绝对路径，使用当前 vault 配置获取文件信息。
-- 新增脱敏的 QQ 空间可选配图指南；Qzone 发布器仍需用户自行部署，不随本仓库分发。
-
-本版本不覆盖 `config.yaml`、`SOUL.md`、`.env`、数据库、sessions 或日志。升级前请保留本地配置，并检查自定义补丁是否与核心文件冲突。
-
-## 目录结构（v0.14.3+）
-
-```
-bot-template 根
-├─ install.bat / start.bat / Stop-All.bat / update.bat / 配置API.bat
-├─ README.md / LICENSE / VERSION / CHANGELOG.md / UPGRADE.md / AGENTS.md
-├─ hermes/          ← 引擎（局域网 git 工作区）
-│   └─ core/        ← 引擎权威（含 OneBot 插件）
-├─ templates/       ← 配置模板（根级）
-├─ modules/         ← 功能模块：napcat/ live2d/ dashboard/ knowledge/
-└─ extras/          ← 安装包/构建/运行时：node/ scripts/ 安装包 构建脚本
-```
-
-## 如何升级
-
-### 方法一：升级脚本（推荐，保留配置文件）
-
-```
-1. 下载最新 bot-template.zip，解压到临时目录
-2. 运行临时目录中的升级脚本：
-   cd 临时目录
-   .venv\Scripts\python extras\scripts\upgrade.py
-3. 重启 Gateway
-```
-
-> `upgrade.py` 只覆盖源码文件和模板，不会动你的 `config.yaml` / `SOUL.md` / `.env`。
-
-### 方法二：下载覆盖（全新安装）
-
-```
-1. 从 GitHub Releases 下载最新 bot-template.zip
-2. 解压到新目录
-3. 将旧版的配置文件复制到新目录：config.yaml, SOUL.md, .env
-4. 运行 install.bat（会跳过已安装的环境）
-5. 运行 start.bat 启动
-```
-
-### 方法三：git pull（仅限通过 git clone 安装的用户）
-
-```
-cd bot-template
-git pull origin main
-.venv\Scripts\python extras\scripts\upgrade.py
-```
-
----
-
-## 旧版用户迁移（v0.14.2 及以下 → v0.14.3+ core 结构）
-
-如果你的安装还是**旧版平铺结构**（存在 `hermes\gateway\` 且**没有** `hermes\core\`），
-直接跑 `update.bat` / `upgrade.py` 会新旧文件并存、import 混乱。请先做迁移：
-
-### 方式 A：双击 update.bat（推荐，自动检测）
-
-`update.bat` 会自动检测旧结构并引导迁移：
-
-1. **自动备份** `hermes\` → `hermes.bak.<日期>`（回滚点，含你的本地修改）
-2. **询问确认**：是否删除旧平铺文件（输入 `y` 确认；输入 `n` 则中止，备份保留）
-3. 复制新版 `hermes\core` 结构
-4. 自动重建 Python 环境（editable 映射 → `hermes\core`）+ 同步 `~/.hermes`
-5. 输出**本地修改文件清单**（官方 v0.14.6 已内置的修复会自动标注"无需移植"）
-
-### 方式 B：手动运行迁移脚本
-
-```
-python extras\scripts\migrate_legacy.py          # 正式迁移
-python extras\scripts\migrate_legacy.py --dry-run # 先预演，只看计划不动手
-```
-
-> **迁移只动 `hermes\` 代码目录**，`~/.hermes` 数据、`config.yaml` / `SOUL.md` / `.env` 完全不动。
-> 备份目录确认一切正常后，可手动删除 `hermes.bak.*`。
-> 旧版"@ 绕过 judge"补丁请放弃——官方 v0.14.4 起改为"@ 强信号走 judge"。
-
-## 文件安装位置
-
-升级脚本会自动将文件放到正确位置，对照如下：
-
-| 源文件（bot-template 内） | 目标位置（`~/.hermes/`） |
-|---|---|
-| `hermes/core/agent/memory/retrieval.py` | `agent/memory/retrieval.py` |
-| `hermes/core/agent/memory/episodic_index.py` | `agent/memory/episodic_index.py` |
-| `hermes/core/agent/memory/gateway.py` | `agent/memory/gateway.py` |
-| `hermes/core/agent/memory/short_term.py` | `agent/memory/short_term.py` |
-| `hermes/core/plugins/platforms/onebot/adapter.py` | `plugins/platforms/onebot/adapter.py` |
-| `hermes/core/plugins/platforms/onebot/config_discovery.py` | `plugins/platforms/onebot/config_discovery.py` |
-| `hermes/core/plugins/platforms/onebot/contract.py` | `plugins/platforms/onebot/contract.py` |
-| `hermes/core/plugins/platforms/onebot/transport_contract.py` | `plugins/platforms/onebot/transport_contract.py` |
-| `hermes/core/plugins/platforms/onebot/plugin.yaml` | `plugins/platforms/onebot/plugin.yaml` |
-| `hermes/core/plugins/platforms/onebot/trigger_coordinator.py` | `plugins/platforms/onebot/trigger_coordinator.py` |
-| `hermes/core/plugins/platforms/onebot/group_executor.py` | `plugins/platforms/onebot/group_executor.py` |
-| `hermes/core/plugins/platforms/onebot/group_state.py` | `plugins/platforms/onebot/group_state.py` |
-| `hermes/core/plugins/platforms/onebot/semantic_judge.py` | `plugins/platforms/onebot/semantic_judge.py` |
-| `hermes/core/plugins/platforms/onebot/media_pipeline.py` | `plugins/platforms/onebot/media_pipeline.py` |
-| `hermes/core/gateway/delivery_ledger.py` | `gateway/delivery_ledger.py` |
-| `hermes/core/gateway/session_stall.py` | `gateway/session_stall.py` |
-| `hermes/core/gateway/shutdown_flush.py` | `gateway/shutdown_flush.py` |
-| `hermes/core/gateway/turn_lease.py` | `gateway/turn_lease.py` |
-| `hermes/core/agent/empty_response_guard.py` | `agent/empty_response_guard.py` |
-| `hermes/core/agent/error_surface.py` | `agent/error_surface.py` |
-| `hermes/core/agent/errors.py` | `agent/errors.py` |
-| `hermes/core/agent/repetition_guard.py` | `agent/repetition_guard.py` |
-| `hermes/core/agent/session_activity.py` | `agent/session_activity.py` |
-| `hermes/core/agent/message_sanitization.py` | `agent/message_sanitization.py` |
-| `hermes/core/corpus_history.py` | `corpus_history.py` |
-| `hermes/core/tools/chat_history_search_tool.py` | `tools/chat_history_search_tool.py` |
-| `hermes/core/tools/memory_gateway_tool.py` | `tools/memory_gateway_tool.py` |
-| `hermes/core/tools/browser_tool.py` | `tools/browser_tool.py` |
-| `hermes/core/tools/vision_tools.py` | `tools/vision_tools.py` |
-| `hermes/core/tools/web_tools.py` | `tools/web_tools.py` |
-| `hermes/core/gateway/run.py` | `gateway/run.py` |
-| `hermes/core/gateway/config.py` | `gateway/config.py` |
-| `hermes/core/gateway/session.py` | `gateway/session.py` |
-| `hermes/core/gateway/platforms/base.py` | `gateway/platforms/base.py` |
-| `hermes/core/run_agent.py` | `run_agent.py` |
-| `hermes/core/agent/provider_projection.py` | `agent/provider_projection.py` |
-| `hermes/core/hermes_state.py` | `hermes_state.py` |
-| `hermes/core/hermes_state_common.py` | `hermes_state_common.py` |
-| `hermes/core/hermes_state_common_compat.py` | `hermes_state_common_compat.py` |
-| `hermes/core/hermes_state_portability.py` | `hermes_state_portability.py` |
-| `hermes/core/hermes_state_portability_compat.py` | `hermes_state_portability_compat.py` |
-| `hermes/core/hermes_state_replay.py` | `hermes_state_replay.py` |
-| `hermes/core/hermes_state_schema.py` | `hermes_state_schema.py` |
-| `hermes/core/hermes_state_schema_probe.py` | `hermes_state_schema_probe.py` |
-| `hermes/core/hermes_state_search.py` | `hermes_state_search.py` |
-| `hermes/core/hermes_state_v26_compat.py` | `hermes_state_v26_compat.py` |
-| `hermes/core/scripts/sessiondb_replay.py` | `scripts/sessiondb_replay.py` |
-| `hermes/core/tools/environments/contract.py` | `tools/environments/contract.py` |
-| `hermes/core/tools/spill_safety.py` | `tools/spill_safety.py` |
-| `extras/scripts/audit_upgrade_map.py` | `extras/scripts/audit_upgrade_map.py` |
-| `hermes/core/plugins/knowledge-base/__init__.py` | `plugins/knowledge-base/__init__.py` |
-| `hermes/core/agent/memory/obsidian.py` | `agent/memory/obsidian.py` |
-| `extras/scripts/qzone-post.py` | `extras/scripts/qzone-post.py` |
-| `extras/scripts/decrypt_cvpkg.py` | `extras/scripts/decrypt_cvpkg.py` |
-| `配置API.bat` | `配置API.bat` |
-
-> 运行 `python scripts/upgrade.py` 自动完成以上复制，无需手动操作。
-
-> 运行时 `hermes/core` 下的 Python 包会按受限闭包自动同步；`tests/`、`docs/`、隐藏目录和 VCS 元数据不会复制。显式安装表仍用于非 Python 资产、模板和平台运行文件。
-
----
-
-## 配置文件搬迁清单
-
-**必须保留（你的个人配置）：**
-
-| 文件 | 内容 |
-|------|------|
-| `config.yaml` | LLM 模型配置、群号、端口 |
-| `SOUL.md` | 角色人设 |
-| `.env` | API Key、Bot QQ、Admin QQ |
-
----
-
-## 版本历史
-
-### v0.14.4
-- **@ 强信号修复**：群内 @机器人 不回复/延迟（judge 判定主体漂移 + jt.seq + pending 覆盖三层根因）
-- **行为约定**：@ = 强信号必判必回，窗口内后续消息只当背景
-- 同步 docs/BUGS_v0.14.4.md + docs/UPDATE_LOG.md
-
-### 下一大版本（未发布）
-- **执行层输出契约**：判定层放行的 mention/judge/continuation/exit 轮要求可见正文；纯空输出或控制标记最多在同一会话反馈重试一次，正文混合标记时保留正文并在成功交付后处理状态。
-- **退出状态修复**：软收尾不再单独触发 exiting；新的 @、角色别名直呼或回复 bot 会复位退出状态，退出判定需要连续状态证据。
-- **升级预期**：由于执行层不再为已放行轮次提供沉默否决，升级后 bot 的发言量可能略有增加。这是设计意图；若需要降低打扰，应调优 judge 门槛或提示词，不要恢复执行层沉默标记。
-- **兼容说明**：无需迁移现有配置；真实 NapCat/provider、双平台进程/WAL、proxy 和 streaming 门禁完成前，本节只作为变更预告，不代表当前发布版本已启用。
-
-### v0.14.1
-- **Dashboard 视觉重构**：更简洁现代，服务状态卡片（状态圆点）、响应式
-- **服务启停秒响应**：异步线程执行（原 2-4s → <0.1s）
-- **Hermes 启动前置检查**：先检查 NapCat（进程 + 3000/3001 端口），未运行弹 toast 提示
-- **日志区优化**：行间距收紧，NapCat 二维码不再被拆行
-- **gateway.py 完整性修复**：补齐 get_stats / get_workflow_decay_report / on_session_end
-
-### v0.14.0
-- **context 探测链关闭**：`_ENABLE_CONTEXT_PROBE` 默认 False（`HERMES_CONTEXT_PROBE=1` 才开）——init 不再 30s×2 探测黑洞
-- **`import json` 修复**：磁盘缓存保存不再静默失败（收尾 2s 延迟消除）
-- **⚠️ 必须配**：`config.yaml model.context_length: 1000000`（探测已关，不配走兜底值）
-- **episodic_index.py / context_compressor.py** 同步（dropped 修复 + 计时插桩）
-
-### v0.13.2
-- **judge 提速**：thinking 默认 low（env JUDGE_THINKING 可切 disabled/low/default），judge 判定 11s → 3-6s
-- **SQLite 锁修复**：store.py `sqlite3.connect(timeout=30)` + `PRAGMA busy_timeout=30000`
-- **成本估算缓存**：model_metadata.py endpoint 元数据内存缓存（收尾 2s 延迟）
-- **退出软处理**：`exit_farewell=true` 才走 mode="exit"（回复最后一句后退出），否则静默 go_quiet
-
-### v0.13.1
-- **judge 队列**：judge in-flight 时新消息入队（不丢消息），结束后补轮
-- **@ 软信号**：@mention 带 `_is_mentioned=True` 进完整 judge 流程（不强锁必回）
-- **at_targets 指向规则**：@自己=强正向，@别人=强反证（"玩去吧"等词是对别人说的）
-- **运行时 @ 解析**：`_group_uid_name_map` 动态学名字，零硬编码
-- **删除** `_batch_has_dismissal`（硬驱赶词拦截死代码）
-
-### v0.13.0
-- **串线修复**：私聊图片 URL 直进 vision 工具（media_urls/media_types）
-- **慢响应修复**：memory consolidation 包 `asyncio.to_thread`（收尾黑洞 16-43s 消除）
-- **诊断增强**：vision 报错明确化 + PERF 段级耗时插桩
-
-### v0.12.6
-- **转发消息处理**：嵌套递归展开（≤5 层防死循环）+ 500k 阈值 + 30k 分块压缩 + 原位标注
-- **角色名参数化**：ONEBOT_BOT_NAME（env > config.yaml > 默认 Soyo）
-- **系统消息屏蔽**：`_bg_review_send` 加 SUPPORTS_SYSTEM_MESSAGES 检查
-- **安装/更新流程**：install.py 重写（SOUL.md 提取角色名）、upgrade.py 双写目标、update.bat 自动调 upgrade.py
-- **文档**：新增开源 AGENTS.md（agent 操作指南）
-
-### v0.12.5
-- **角色名参数化**：ONEBOT_BOT_NAME 环境变量（env > config.yaml > 默认 Soyo）
-- **Bug 修复**：
-  - mention 复位时清空 progression_guidance（防 LLM 读到旧"不要插嘴"指令）
-  - should_exit 分支 @ 消息不 go_quiet（防 mention 被压掉）
-  - mention 模式跳过指导注入
-  - 图片/语音识别加 max_tokens 65536 + 超时 60s（thinking 吃满 token 导致识别失败）
-  - `_bg_review_send` 加 SUPPORTS_SYSTEM_MESSAGES 检查（防 "💾 Memory updated" 发到 QQ）
-- **安装/更新流程**：
-  - install.py 生成完整 .env（含 ONEBOT_BOT_NAME）
-  - 角色名由 配置API.bat / install.py 的 detect_bot_name 自动同步到 .env
-  - upgrade.py 目标路径修复（真正更新 ~/.hermes/）
-  - update.bat 自动调用 upgrade.py
-
-### v0.12.4
-- **P0 修复**：MemoryRetriever 增加 `epi=None` 参数，修复 memory gateway 初始化崩溃导致 bot 不回复
-- **P2 修复**：trigger_coordinator @mention 增加 episode phase 复位（exiting/winding_down → starting）
-- **P3 补充**：新增 `corpus_history.py`，FTS5 群聊全文搜索模块
-
-### v0.12.3
-- 修复 EPI 跨群记忆归档 `dropped` 变量未定义崩溃
-
-### v0.12.2
-- Stop-All.bat/start.bat 进程管理改进
-- `chat_history_search_tool.py` 截断修复
-- max_tokens 统一 65536
-
-### v0.12.0-12.1
-- Episode State 系统（16 字段）
-- EpisodeIndex 记忆层（EPI）
-
-### v0.11.0-11.1
-- EpisodeIndex 记忆层完整实现
-- upgrade.py UPGRADE_MAP 补全
-
-### v0.10.6
-- 消息处理架构重构（三阶段流水线）
-- 新增 media_pipeline / trigger_coordinator / group_executor
-
----
-
-## 两端（服务器 ↔ Win）同步流程
-
-### 同步边界
-
-| 目录 | 归属 | 同步方式 |
-|---|---|---|
-| `hermes/core/` | 引擎权威 | **局域网 git**（服务器权威，Win 拉取） |
-| `templates/` | 配置模板 | 局域网 git（服务器权威） |
-| `modules/` | 功能模块（napcat/live2d/dashboard） | **Win 本地维护**（可回传） |
-| `extras/` | 安装包/构建/node/scripts | **Win 本地维护** |
-
-### 服务器 → Win（拉取引擎更新）
-
-```bash
-cd hermes
-git fetch origin
-git checkout origin/main -- core/ templates/ .gitignore
-```
-
-### Win → 服务器（回传 Win 独有开发）
-
-```bash
-cd hermes
-git add core/ modules/ extras/ templates/
-git commit -m "Win update"
-git push origin main
-```
-
-### 局域网仓库
-
-- 服务器：`~/hermes-core.git`（bare repo）
-- Win remote：`ssh://<server-user>@<server-ip>/<hermes-core-path>.git`
-- 首次接入：`git clone ssh://<server-user>@<server-ip>/<hermes-core-path>.git`
-
-### 隐私红线
-
-`.env / config.yaml / SOUL.md / sessions/ / logs/ / *.db` 永不进 git（.gitignore 已排除）
-
----
-
-## 常见问题
-
-**Q: 升级后 bot 不回复？**
-
-1. 检查日志 `~/.hermes/logs/gateway.log` 有无 `MemoryRetriever` 或 `ImportError` 报错
-2. 确认 `.env` 中的 `ONEBOT_SELF_ID` 已设置
-3. 确认所有文件已安装到正确位置（对照上方文件安装位置表）
-
-**Q: `database is locked` 持续刷屏？**
-
-A: 你的 `~/.hermes/plugins/platforms/onebot/adapter.py` 是旧版，缺 WAL PRAGMA。运行 `python scripts/upgrade.py` 升级即可。
-
-**Q: 群聊 @ 了但不回复？**
-
-A: v0.12.4 已修复。如仍发生，检查 gateway 日志中是否有 `episode` 或 `MemoryRetriever` 相关错误。
-
-**Q: 升级后 Live2D 不显示？**
-
-A: `electron-offline.zip` 未包含时需联网安装，运行 `cd modules\live2d && ..\..\node\npm.cmd install`。
-
-**Q: 想保留旧版配置？**
-
-A: 方法二创建新目录，只把旧版的 config.yaml / SOUL.md / .env 复制过去即可。
-
----
-
-## 当前部署流程与账号选择（2026-09）
-
-首次部署仍按以下顺序执行：
-
-```text
-① 双击 install.bat
-   → 离线安装 Python、Node.js、Live2D 和 Hermes
-② 启动 modules\napcat\napcat.bat
-   → 登录 QQ，并在 NapCat WebUI 开启 OneBot11 的 WS/HTTP 服务
-③ 双击 配置API.bat
-   → 选择 LLM、填写 API Key 和管理员 QQ；已登录账号会自动发现
-④ 准备 SOUL.md
-   → 编辑角色后重新运行 配置API.bat，同步角色名
-⑤ 双击 start.bat
-   → 打开 Dashboard，在“QQ 连接”选择当前 NapCat 登录账号，再启动 Hermes 网关
-```
-
-Dashboard 的账号选择只保存 `ONEBOT_SELF_ID`，Hermes 运行时从 NapCat 对应的
-`onebot11_<QQ>.json` 读取 token。WebUI token 与 OneBot11 token 是两套独立凭据，
-不能互相替代；token 不会显示在 Dashboard 或普通日志中。当前推荐一台机器部署一个
-Hermes Bot 实例，切换账号后重启 Hermes 网关生效。
-
-多账号、多 NapCat 和多 Hermes Bot 的统一控制平面已经列入长期计划，但暂不作为当前
-发布能力：未来需要为每个实例分配独立配置根、WS/HTTP 端口、PID/lock、Hermes profile、
-SessionDB、Memory namespace 和日志范围，不能共享现有单实例的 `~/.hermes`、`state.db`
-或记忆数据。详细设计见内部 `hermes/docs/NAPCAT_MULTI_INSTANCE_PLAN.md`；在跨平台
-进程、WAL、profile 隔离和回滚门禁完成前，不启动多实例编排。
-
-
-
-
+# 原生运行时更新与恢复
+
+> 当前主线是未发布的 **1.0.0**。旧 Hermes / 0.x 已停更，历史 tag 保留不改。
+> 新链路的验证边界见 [MIGRATION.md](MIGRATION.md)，旧版历史变更在 [CHANGELOG.md](CHANGELOG.md)。
+
+## 从旧 Hermes 迁移
+
+- 使用源码目录之外的**新私有实例目录**。不要把 `AGENT_QQBOT_HOME` 指向旧 home。
+- 停止旧 QQ writer 后，按 README 配置新的 DSH + NapCat 链路；没有 Hermes fallback。
+- 不自动导入旧 `.env`、YAML、数据库、sessions、日志、人格或生产计划任务。
+  人格通过用户主动选择文件或向导正文保存；旧数据原样留存。
+- 不执行历史 `UPGRADE_MAP`、旧脚本双写或复制整个 home 的流程。
+
+## 更新源码与运行时
+
+普通用户优先使用预构建包：停止本实例后完整解压新包，运行新包 `update.bat` 或
+`runtime/python/bin/python3 extras/scripts/portable_launcher.py update`，再启动。
+运行时选择不会编译 / 联网安装依赖，不自动登录 QQ；已有 NapCat 登录目录不在未审核的更新中原地覆盖。
+以下源码流程仅供维护者，不是用户前置步骤。
+
+1. 停止本实例控制台和自有服务。保留私有配置、数据及恢复备份。
+2. 人工检查并更新源码目录；本工具不会 `git pull`、reset、覆盖本地补丁或自动下载 GitHub 最新版。
+3. 执行 `update.bat` / `python3 extras/scripts/bootstrap.py update`。
+4. 安装器在新的 `runtimes/<内容指纹>-<随机标识>` 内装配**整个固定 DSH fork**，
+   用上游锁文件和依赖补丁装配 Host/Web/UI/原生模块，不混装官方宿主。
+   相同 fork/平台/Node/插件依赖配方已成功构建时，可复用私有原生依赖，仅生成新业务快照；首次仍需完整构建。
+   复用记录写入安装回执；不要手工删除仍被新快照引用的旧 runtime 目录。
+5. 成功后通过可恢复的 profile 依赖链接切换；manifest、前一运行时和切换回执保留。
+   安装/源码编译不等于功能验证，不会自动启服。
+
+依赖首次安装可能联网并编译；旧离线 Node/Electron 包不被当作兼容性证据。
+固定版本、SHA 与来源在 `application.toml`；实例自选 endpoint/model/账号/路径不写回源码。
+
+## 回滚与故障
+
+- `python extras/scripts/bootstrap.py rollback`（Linux 用 `python3`）：在所有自有服务停止后
+  选择前一个已安装运行时，不启动它，不回退数据库/session schema，不撤销已经发生的 QQ/Qzone 效果。
+  先核实数据格式兼容，不能把“切回代码”当成完整数据恢复。
+- 依赖下载/编译失败保留诊断目录，未完成运行时不被选为活动版本。
+- 断电等中断切换会保留 `private/runtime-switch.json`，启动器拒绝冒充切换完成；
+  `recover-runtime` 命令只恢复回执中已知的依赖链接与 manifest，不扫描/删除其他路径。
+- `doctor` 只读本地配置、工具版本和源码指纹，不建 home、不请求模型/QQ，也不是测试套件。
+- `Stop-All.bat` 只请求本实例鉴权控制台停止自有进程；未运行的控制台或未知端口不会触发杀进程。
+
+## 原生模型设置的保存与应用
+
+DSH 设置页面“保存”仅保存草稿；“应用”排队给实例 supervisor。
+supervisor 先核对工作静默及配置指纹，暂停 QQ 入口后再次检查，才重启 Web→Gateway。
+新输入竞态时保留原任务；失败保留操作记录和配置备份，并尝试恢复前一配置。
+新鲜 Host/通道就绪后才标记 applied，不通过 systemd/root oneshot 提权。
+
+文件事务与实际服务验收的范围分开记录在 [VALIDATION.md](VALIDATION.md)；不沿用 Linux 历史生产记录作新链路的通过证据。

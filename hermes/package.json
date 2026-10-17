@@ -1,0 +1,7 @@
+{
+  "name": "agent-for-qqbot-source",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native DSH source workspace; use the unified launcher at the repository root.",
+  "scripts": {"postinstall": "node -e \"console.log('Use extras/scripts/bootstrap.py install from the project root; npm install here does not install the native runtime.')\""}
+}

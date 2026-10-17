@@ -1,0 +1,31 @@
+{
+  "note": "本地免 Key 字段示意。普通用户在原生 DSH 内配置；模型必须部署在 Bot 所在机器的回环地址。端口、模型和预算由你自己填写，不借用作者本机配置。",
+  "character_name": "Bot",
+  "action_uses_character": true,
+  "model_profiles": {},
+  "models": {
+    "character": {
+      "name": "{{本地模型ID}}",
+      "base_url": "http://127.0.0.1:{{本地模型端口}}/v1",
+      "auth_mode": "none",
+      "api_key": "",
+      "api": "openai-completions",
+      "context_window": "{{已确认的上下文上限，整数}}",
+      "max_tokens": "{{输出预算，整数}}",
+      "vision": false,
+      "reasoning_effort": "",
+      "reasoning_efforts": {}
+    },
+    "action": {},
+    "fallbacks": []
+  },
+  "management_host": "127.0.0.1",
+  "native_host": "127.0.0.1",
+  "management_require_key": false,
+  "native_require_key": false,
+  "onebot": {"enabled": false},
+  "host_permission_mode": "workspace-write",
+  "automation_jobs": [],
+  "development": {"backend": "disabled"},
+  "agent_line": {"routes": []}
+}

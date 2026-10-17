@@ -76,10 +76,21 @@ def extract_cvpkg(filepath: str | Path, output_dir: str | Path) -> Path:
     print(f"Decrypting: {filepath.name} ({filepath.stat().st_size / 1_000_000:.1f} MB)")
     zip_data = decrypt_cvpkg(filepath)
 
+    if output_dir.is_symlink() or (output_dir.exists() and any(output_dir.iterdir())):
+        raise ValueError('Existing model directory is not overwritten')
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
         names = zf.namelist()
+        if len(names) > 10000 or sum(info.file_size for info in zf.infolist()) > 1024 * 1024 * 1024:
+            raise ValueError('Model archive extraction budget exceeded')
+        from pathlib import PurePosixPath
+        import stat
+        for info in zf.infolist():
+            relative = PurePosixPath(info.filename)
+            if relative.is_absolute() or '..' in relative.parts or '\\' in info.filename or ':' in info.filename or stat.S_ISLNK(info.external_attr >> 16):
+                raise ValueError('Unsafe model archive member')
+            (output_dir / info.filename).resolve().relative_to(output_dir.resolve())
         print(f"  Extracting {len(names)} files to {output_dir}")
         zf.extractall(output_dir)
 

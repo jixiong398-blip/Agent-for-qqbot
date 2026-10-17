@@ -1,0 +1,4 @@
+# The vendor pin identifies retained bytes; never rewrite it on checkout.
+core/soyo/dsh/asuna-ui/vendor/cognition-core-client.js -text
+core/soyo/dsh/asuna-ui/client.js text eol=lf
+core/soyo/dsh/asuna-ui/adapter.js text eol=lf

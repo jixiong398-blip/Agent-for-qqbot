@@ -1,0 +1,56 @@
+# Product/build metadata, not a user's deployment configuration.
+[project]
+name = "Agent-for-qqbot"
+repository = "jixiong398-blip/Agent-for-qqbot"
+branch = "main"
+
+[runtime]
+python_minimum = "3.12"
+node_minimum = "22.19.0"
+node_excluded_majors = [23]
+dsh_package = "@deepseek-ai/dsh"
+dsh_version = "0.2.1-rc.2"
+inline_repository = "https://github.com/eamars/deepseek-harness.git"
+inline_branch = "asuna/0.2.1-rc.2"
+inline_commit = "5713aab7963851d1a87482058c33c4af0e1c2ff8"
+inline_packages = ["@deepseek-ai/dsh-client-ui-chat", "@deepseek-ai/dsh-client-ui-renderer"]
+
+[defaults]
+management_host = "127.0.0.1"
+management_port = 8899
+native_host = "127.0.0.1"
+native_port = 8898
+native_upstream_port = 8897
+channel_port = 8896
+automation_port = 8895
+agent_line_port = 8894
+live2d_port = 19919
+napcat_web_port = 6099
+onebot_http_port = 3000
+onebot_ws_port = 3001
+ready_timeout = 120
+stop_timeout = 30
+
+[registries]
+npm = "https://registry.npmjs.org"
+pypi = "https://pypi.org/simple"
+
+[live2d_defaults]
+manifest_url = "https://cucumbervpet.sevenvoxel.com/manifest.json"
+
+[portable.python]
+version = "3.12.15"
+release = "20261013"
+windows_url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.12.15%2B20261013-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+windows_sha256 = "7a2aef48e5ee569e310b29b32681debbc5d888e92790d85331a47736c6b06aad"
+linux_url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.12.15%2B20261013-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+linux_sha256 = "178d3d83b6e8e99285a65d3fce9c16b87952cc5efdb4d1a0e3ff3be18ff0fc9c"
+
+[napcat]
+version = "4.18.38"
+repository = "https://github.com/NapNeko/NapCatQQ"
+release_url = "https://github.com/NapNeko/NapCatQQ/releases/tag/v4.18.38"
+windows_url = "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.38/NapCat.Shell.Windows.Node.zip"
+windows_sha256 = "b88007a373a30deefb387e7cf17911752ff900bce22c534b3da6b644f5c6d0ae"
+linux_url = "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.38/NapCat.Shell.zip"
+linux_sha256 = "735f2e633247df3ffd6e8ee8b84d7039c315b2655f5807e5f0029f93d2c30016"

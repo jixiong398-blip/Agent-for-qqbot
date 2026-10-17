@@ -85,3 +85,15 @@ modules/live2d/models/
 modules/live2d/*.zip
 modules/live2d/*.json
 /scripts
+
+# Source metadata is not deployment state. Keep the reviewed root manifest
+# visible to the surrounding distribution repository without exposing configs.
+!/package.json
+!/core/soyo/dsh/host/package.json
+!/core/soyo/dsh/dashboard/package.json
+!/core/soyo/dsh/asuna-ui/package.json
+!/core/soyo/dsh/asuna-ui/vendor/source.json
+!/core/soyo/dsh/asuna-ui/BUILD_MANIFEST.json
+!__main__.py
+# Reviewed platform-neutral source, not a runtime state file.
+!/core/soyo/social/state.py

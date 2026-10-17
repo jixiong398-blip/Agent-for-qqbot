@@ -20,6 +20,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { authorized } = require('./control-auth');
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -64,7 +65,7 @@ class HermesWsBridge {
     this._config = config || {};
     this._clients = new Set();
     this._heartbeatTimer = null;
-    this._modelsDir = path.join(__dirname, 'assets', 'models');
+    this._modelsDir = process.env.LIVE2D_MODELS_DIR || path.join(process.env.AGENT_QQBOT_HOME || __dirname, 'live2d', 'models');
 
     this._currentModel = {
       character: this._config.character || '',
@@ -83,8 +84,8 @@ class HermesWsBridge {
   _setupUpgradeHandler() {
     if (!this._httpServer) { console.warn('[HermesWS] No HTTP server provided'); return; }
 
-    this._httpServer.on('upgrade', (req, socket, head) => {
-      if (req.url !== '/hermes') return;
+    this._upgradeHandler = (req, socket, head) => {
+      if (req.url !== '/hermes' || !authorized(req, this._httpServer)) { socket.destroy(); return; }
 
       const upgrade = (req.headers.upgrade || '').toLowerCase();
       if (upgrade !== 'websocket') return;
@@ -118,7 +119,8 @@ class HermesWsBridge {
       socket.on('data', (chunk) => { this._onData(client, chunk); });
       socket.on('close', () => { this._clients.delete(client); console.log('[HermesWS] Client disconnected (' + this._clients.size + ' total)'); });
       socket.on('error', (err) => { console.error('[HermesWS] Socket error:', err.message); this._clients.delete(client); try { socket.destroy(); } catch {} });
-    });
+    };
+    this._httpServer.on('upgrade', this._upgradeHandler);
   }
 
   // ─── Frame Parsing (RFC 6455) ───────────────────────────────────────────
@@ -345,7 +347,7 @@ class HermesWsBridge {
       return;
     }
 
-    const modelUrl = 'http://127.0.0.1:19919/assets/models/' + character + '/' + costume + '/' + modelFile;
+    const modelUrl = 'http://127.0.0.1:' + this._httpServer.address().port + '/assets/models/' + character + '/' + costume + '/' + modelFile;
     this._forwardToRenderer({ type: 'loadModel', url: modelUrl, character, costume });
     this._currentModel = { character, costume };
     this._send(client, { type: 'modelLoaded', character, costume });
@@ -436,7 +438,7 @@ class HermesWsBridge {
     try {
       if (enabled) {
         win.setSkipTaskbar(false);
-        win.setTitle('Hermes Live2D (Stream)');
+        win.setTitle('Bot Live2D (Stream)');
       } else {
         win.setSkipTaskbar(true);
         win.setTitle('Live2D Desktop Pet');
@@ -619,6 +621,7 @@ class HermesWsBridge {
 
   // ─── Cleanup ───────────────────────────────────────────────────────────
   destroy() {
+    if (this._upgradeHandler) this._httpServer.removeListener('upgrade', this._upgradeHandler);
     if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null; }
     for (const client of this._clients) {
       this._sendClose(client, 1001, 'Server shutting down');

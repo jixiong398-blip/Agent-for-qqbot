@@ -1,0 +1,21 @@
+{
+  "note": "云端模型字段示意，不是完整配置；先用向导生成私有 deployment.json，再按供应商文档填写。Bot 可自行改名；不预置人物、供应商或模型。不要原样覆盖私有配置。",
+  "character_name": "Bot",
+  "action_uses_character": true,
+  "model_profiles": {},
+  "models": {
+    "character": {"name": "{{模型ID}}", "base_url": "{{API Base URL}}", "auth_mode": "bearer", "api_key": "{{私有Key}}", "api": "openai-completions", "context_window": "{{已确认的上下文上限，整数}}", "max_tokens": "{{输出预算，整数}}", "vision": false, "reasoning_effort": "", "reasoning_efforts": {}},
+    "action": {},
+    "fallbacks": []
+  },
+  "management_host": "127.0.0.1",
+  "native_host": "127.0.0.1",
+  "management_require_key": false,
+  "native_require_key": false,
+  "onebot": {"enabled": false, "account_id": "", "admin_ids": [], "allowed_users": [], "blocked_users": [], "owner_group_ids": [], "http_url": "", "ws_url": "", "config_directory": "", "token": ""},
+  "host_permission_mode": "workspace-write",
+  "automation_jobs": [],
+  "development": {"backend": "disabled"},
+  "native_options": {},
+  "agent_line": {"routes": []}
+}

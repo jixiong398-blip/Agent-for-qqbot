@@ -1,0 +1,17 @@
+{
+  "name": "@soyo/dsh-asuna-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "exports": {".": "./index.mjs", "./client": "./client.js", "./package.json": "./package.json"},
+  "files": ["*.mjs", "*.js", "*.json", "vendor", "LICENSE", "README.md"],
+  "dsh": {"client": {"platform": "web", "inject": [
+    "@deepseek-ai/dsh-client-ui-sidebar-right", "@deepseek-ai/dsh-client-ui-settings",
+    "@deepseek-ai/dsh-client-ui-workspace", "@deepseek-ai/dsh-client-ui-conversation",
+    "@deepseek-ai/dsh-client-ui-chat", "@deepseek-ai/dsh-client-ui-renderer",
+    "@deepseek-ai/dsh-client-ui-tool", "@deepseek-ai/dsh-client-ui-primitives",
+    "@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-connection"
+  ]}},
+  "peerDependencies": {"@deepseek-ai/schemastery": "*"}
+}
