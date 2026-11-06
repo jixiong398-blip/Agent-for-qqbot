@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+import time
 import pytest
 
 from soyo.qq import ChannelRoute, OutboundIntent, build_outbound_plans, split_reply_text
@@ -40,6 +41,30 @@ def test_native_context_never_ambiently_reads_legacy(tmp_path: Path):
     explicit = call({**config, "memory_private_peers": ["100001"]},
                     {**envelope, "action": "recall", "message_type": "private", "query": "private-secret"})
     assert explicit["legacy"][0]["origin"] == "legacy_read_only"
+
+
+def test_sticker_pool_excludes_photos_and_market_sticker_can_be_kept(tmp_path: Path):
+    config = _config(tmp_path)
+    group = {"route_id": "qq-group-123456", "event_id": "sticker-1", "sender_id": "100002",
+             "message_type": "group", "text": "[表情包][图片（未解析）]", "occurred_at": time.time(),
+             "media": [
+                 {"kind": "image", "ref": "a" * 32 + ".gif", "placeholder": "[表情包]",
+                  "metadata": {"sticker": "custom"}},
+                 {"kind": "image", "ref": "photo.jpg", "placeholder": "[图片（未解析）]",
+                  "metadata": {"sub_type": "0"}},
+                 {"kind": "image", "ref": "market.gif", "placeholder": "[表情包:臭]",
+                  "metadata": {"sticker": "market", "emoji_id": "e" * 32,
+                                "emoji_package_id": "p", "key": "k"}},
+             ]}
+    record(config, group)
+    listing = call(config, {**group, "action": "sticker", "op": "list"})
+    assert {item["kind"] for item in listing["candidates"]} == {"custom", "market"}
+    market = next(item for item in listing["candidates"] if item["kind"] == "market")
+    kept = call(config, {**group, "action": "sticker", "op": "keep", "fingerprint": market["candidate"],
+                         "name": "臭", "note": "嫌弃的时候"})
+    assert kept["state"] == "kept"
+    resolved = call(config, {**group, "action": "sticker", "op": "resolve", "name": "臭"})
+    assert resolved["kind"] == "market" and resolved["emoji_id"] == "e" * 32
 
 
 def test_native_context_exposes_recent_generated_replies_without_marking_them_delivered(tmp_path: Path):

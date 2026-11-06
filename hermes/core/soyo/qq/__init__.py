@@ -17,6 +17,7 @@ from .contracts import (
     Receipt,
 )
 from .inbound import SeenLRU, classify_onebot_event, parse_message
+from .faces import BY_ID, BY_NAME
 from .journal import Counters, SoyoQQJournal
 from .catchup import CatchupPolicy, CatchupRunner
 from .host import HistoryPage, HistoryPort, HostPort, OutboxClaim, PlatformPort, PortResult
@@ -41,6 +42,8 @@ __all__ = [
     "SeenLRU",
     "classify_onebot_event",
     "parse_message",
+    "BY_ID",
+    "BY_NAME",
     "Counters",
     "SoyoQQJournal",
     "OutboundPlanError",

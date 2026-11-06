@@ -94,7 +94,12 @@ def test_render_pins_browser_authority_to_connection_not_advertised_url(tmp_path
     selected = runtime(home, 'fixture')
     preset = Path(selected['modules']) / '@deepseek-ai/dsh-web-app/presets/standard.patch.yml'
     preset.parent.mkdir(parents=True)
-    preset.write_text(yaml.safe_dump([{'insert': [{'config': {'plugins': [{}]}}]}]), encoding='utf-8')
+    # render() rewrites the standard preset's first plugin (persona) and then
+    # composes the action preset from named services, so the fixture must carry
+    # both the placeholder slot and the ids a real install exposes.
+    preset.write_text(yaml.safe_dump([{'insert': [{'config': {'plugins':
+        [{'id': 'persona'}] + [{'id': name} for name in
+            ('agent-instructions', 'time-context', 'tool-web', 'tool-todo')]}}]}]), encoding='utf-8')
     install.select_runtime(home, selected)
     render(home, value, selected['directory'])
     rows = yaml.safe_load((home / 'profiles/qqbot/cordis.patch.yml').read_text(encoding='utf-8'))
@@ -107,3 +112,9 @@ def test_render_pins_browser_authority_to_connection_not_advertised_url(tmp_path
     assert ingress['host'] == host and ingress['requireAccessKey'] is False
     assert inserted['soyo-dashboard']['config']['apiURL'] == f'http://{host}:{value["management_port"]}'
     assert entries['webserver']['config']['host'] == '127.0.0.1'
+    qq_preset = inserted['preset-soyo-qq-compaction']['config']
+    assert qq_preset['id'] == 'soyo-qq-compaction'
+    assert qq_preset['plugins'][0]['isolate'] == {'compaction': True, 'toolResultPruner': True}
+    names = {row['name'] for row in qq_preset['plugins'][0]['config']}
+    assert names == {'@deepseek-ai/dsh-compaction-basic', '@deepseek-ai/dsh-compaction-tool-result-pruner'}
+    assert not any('dsh-tool-bash' in name or 'dsh-tool-fs' in name or 'dsh-tool-subagent' in name for name in names)

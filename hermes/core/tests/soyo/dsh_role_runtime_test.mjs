@@ -24,6 +24,8 @@ test('group binding exposes read tools but no owner/action/GPT grant', () => {
   assert(visible.has('qq_group_info'));
   assert(!visible.has('soyo_consult'));
   assert(!visible.has('soyo_action_brain'));
+  assert(!visible.has('soyo_attach_image'));
+  assert(!visible.has('soyo_recent_images'));
   assert(!visible.has('schedule_create'));
   assert.match(runtime.guard({ agent, name: 'qq_group_info' }), /先调用 soyo_think/);
   runtime.markThought(agent, '我先确认当前场景。');
@@ -45,6 +47,8 @@ test('owner private binding exposes GPT, Schedule and action tools', () => {
   assert(visible.has('schedule_create'));
   for (const name of ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'job_output']) assert(visible.has(name));
   assert(visible.has('qq_ban'));
+  assert(visible.has('soyo_attach_image'));
+  assert(visible.has('soyo_recent_images'));
   assert.equal(runtime.guard({ agent, name: 'soyo_consult' }), undefined);
 });
 
@@ -130,5 +134,7 @@ test('an action report continues the actual owner job like a GPT report', () => 
     origin_job_key: 'b'.repeat(64), action_id: 'action-example' };
   runtime.admit(job); runtime.begin(agent, job); runtime.markThought(agent, '核对原任务的真实行动证据。');
   assert.equal(job.binding.owner_continuation, true);
+  assert(runtime.exposed(agent).has('soyo_attach_image'));
+  assert(runtime.exposed(agent).has('soyo_recent_images'));
   assert.equal(runtime.guard({ agent, name: 'read' }), undefined);
 });

@@ -341,36 +341,64 @@ def read_media(config: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, 
     max_bytes = int(config.get("max_media_bytes", 20 * 1024 * 1024))
     action = {"image": "get_image", "record": "get_record", "video": "get_file"}[kind]
     url = ref
+    content = None
     if urlsplit(ref).scheme not in {"http", "https"}:
         with httpx.Client(base_url=base, trust_env=False, timeout=15,
                           headers={"Authorization": "Bearer " + token}) as client:
-            response = client.post("/" + action, json={"file": ref})
-            response.raise_for_status()
-            result = response.json()
+            with client.stream("POST", "/" + action, json={"file": ref}) as response:
+                response.raise_for_status()
+                raw = bytearray()
+                for chunk in response.iter_bytes(64 * 1024):
+                    raw.extend(chunk)
+                    if len(raw) > ((max_bytes + 2) // 3) * 4 + 64 * 1024:
+                        raise ValueError("media metadata exceeds bounded size")
+            result = json.loads(raw)
             if result.get("retcode") != 0:
                 return {"ok": False, "error": "media_reference_rejected"}
             data = result.get("data") or {}
             url = str(data.get("url") or data.get("file") or "")
-    parsed = urlsplit(url)
-    allowed_domains = tuple(config.get("media_url_domains") or ["qpic.cn", "qq.com", "gtimg.cn", "gtimg.com", "multimedia.nt.qq.com.cn"])
-    host = (parsed.hostname or "").lower()
-    if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
-            or not any(host == domain or host.endswith("." + domain) for domain in allowed_domains)):
-        return {"ok": False, "error": "media_url_not_authorized"}
-    # An external image server must never receive the OneBot Bearer token.
-    with httpx.Client(trust_env=False, follow_redirects=False, timeout=20) as client:
-        with client.stream("GET", url) as response:
-            response.raise_for_status()
-            if int(response.headers.get("content-length") or 0) > max_bytes:
-                raise ValueError("media exceeds bounded size")
-            content_type = str(response.headers.get("content-type") or "").split(";", 1)[0].lower()
-            chunks, size = [], 0
-            for chunk in response.iter_bytes(64 * 1024):
-                size += len(chunk)
-                if size > max_bytes:
+            if kind == "image" and data.get("base64"):
+                # These bytes come from authenticated loopback NapCat, not an
+                # arbitrary path supplied by QQ text or an expired external URL.
+                import base64
+                import binascii
+                try:
+                    content = base64.b64decode(data["base64"], validate=True)
+                except (ValueError, TypeError, binascii.Error):
+                    return {"ok": False, "error": "invalid_cached_image_base64"}
+                if not content or len(content) > max_bytes:
                     raise ValueError("media exceeds bounded size")
-                chunks.append(chunk)
-            content = b"".join(chunks)
+                if content.startswith(b"\x89PNG\r\n\x1a\n"):
+                    content_type = "image/png"
+                elif content.startswith(b"\xff\xd8\xff"):
+                    content_type = "image/jpeg"
+                elif content.startswith((b"GIF87a", b"GIF89a")):
+                    content_type = "image/gif"
+                elif content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+                    content_type = "image/webp"
+                else:
+                    return {"ok": False, "error": "cached_image_type_rejected"}
+    if content is None:
+        parsed = urlsplit(url)
+        allowed_domains = tuple(config.get("media_url_domains") or ["qpic.cn", "qq.com", "gtimg.cn", "gtimg.com", "multimedia.nt.qq.com.cn"])
+        host = (parsed.hostname or "").lower()
+        if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
+                or not any(host == domain or host.endswith("." + domain) for domain in allowed_domains)):
+            return {"ok": False, "error": "media_url_not_authorized"}
+        # An external image server must never receive the OneBot Bearer token.
+        with httpx.Client(trust_env=False, follow_redirects=False, timeout=20) as client:
+            with client.stream("GET", url) as response:
+                response.raise_for_status()
+                if int(response.headers.get("content-length") or 0) > max_bytes:
+                    raise ValueError("media exceeds bounded size")
+                content_type = str(response.headers.get("content-type") or "").split(";", 1)[0].lower()
+                chunks, size = [], 0
+                for chunk in response.iter_bytes(64 * 1024):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise ValueError("media exceeds bounded size")
+                    chunks.append(chunk)
+                content = b"".join(chunks)
     root = Path(str(config.get("media_root") or ""))
     if not root.is_absolute() or root.is_symlink():
         raise ValueError("media root unavailable")

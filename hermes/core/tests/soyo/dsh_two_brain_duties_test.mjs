@@ -18,6 +18,8 @@ function bound(envelope, lane = 'character', extra = {}) {
 test('owner character advertises decisions, delegation and shared image only', () => {
   const { runtime, agent } = bound(owner);
   assert(runtime.exposed(agent).has('soyo_action_brain'));
+  assert(runtime.exposed(agent).has('soyo_attach_image'));
+  assert(runtime.exposed(agent).has('soyo_recent_images'));
   for (const name of runtime.exposed(agent)) assert(CHARACTER_TOOL_NAMES.has(name));
   for (const name of [...HOST_TOOL_NAMES].filter(name => name !== 'read_image').concat(['soyo_memory', 'qq_ban', 'schedule_create']))
     assert.match(runtime.guard({ agent, name }), /CAPABILITY_DENIED/);
@@ -53,6 +55,8 @@ test('public character may record an external request but cannot dispatch it dir
   const { runtime, agent, job } = bound(publicScene);
   assert(runtime.exposed(agent).has('soyo_request_help'));
   assert(!runtime.exposed(agent).has('soyo_action_brain'));
+  assert(!runtime.exposed(agent).has('soyo_attach_image'));
+  assert(!runtime.exposed(agent).has('soyo_recent_images'));
   assert.match(runtime.guard({ agent, name: 'soyo_action_brain' }), /CAPABILITY_DENIED|ROLE_DUTY/);
   assert.match(runtime.guard({ agent, name: 'soyo_request_help' }), /先调用 soyo_think/);
   runtime.markThought(agent, '先把别人的申请记下来，不能直接替他做。');
@@ -92,6 +96,15 @@ test('public completion keeps its original scene instead of acquiring owner tool
   assert(!job.binding.owner_continuation);
   assert(runtime.exposed(agent).has('qq_group_info'));
   assert.match(runtime.guard({ agent, name: 'write' }), /CAPABILITY_DENIED/);
+});
+
+test('owner action report can attach the prepared image to its final reply', () => {
+  const { runtime, agent, job } = bound(owner, 'character', { internal: true, internal_source: 'action-report', origin_job_key: 'b'.repeat(64) });
+  assert.equal(job.binding.owner_continuation, true);
+  assert(runtime.exposed(agent).has('soyo_attach_image'));
+  assert(runtime.exposed(agent).has('soyo_recent_images'));
+  runtime.markThought(agent, '主人私聊附图由我自己完成。');
+  assert.equal(runtime.guard({ agent, name: 'soyo_attach_image' }), undefined);
 });
 
 test('automatic cognition uses only its batch memory even in an owner scene', () => {

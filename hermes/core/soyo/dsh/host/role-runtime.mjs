@@ -40,6 +40,7 @@ export const HOST_TOOL_NAMES = new Set([
 export const CHARACTER_TOOL_NAMES = new Set([
   'soyo_think', 'soyo_action_brain', 'soyo_action_status', 'soyo_action_message', 'soyo_action_stop',
   'soyo_consult', 'soyo_development_decide', 'soyo_request_help', 'soyo_external_request', 'read_image',
+  'soyo_attach_image', 'soyo_recent_images',
 ]);
 export const dualMode = config => config.brain_mode === 'character-action';
 
@@ -82,6 +83,9 @@ function toolVisible(name, binding) {
   if (name === 'soyo_peer_ask' || name === 'soyo_review_candidate' || name === 'soyo_review_status')
     return hasCapability(binding, 'gpt.review') && hasCapability(binding, 'host.root');
   if (name === 'pass_note') return binding.session_class === 'owner_private';
+  if (name === 'soyo_attach_image' || name === 'soyo_recent_images')
+    return binding.session_class === 'owner_private' &&
+      (!binding.internal || binding.owner_continuation) && binding.lane !== 'action';
   if (name === 'leave_note') return binding.session_class !== 'owner_private';
   if (HOST_TOOL_NAMES.has(name)) return hasCapability(binding, 'host.root');
   if (name.startsWith('soyo_action_')) return hasCapability(binding, 'action.delegate');
@@ -179,7 +183,11 @@ export class SoyoRoleRuntime {
       const visible = new Set([...CHARACTER_TOOL_NAMES].filter(name => name === 'soyo_consult' ? state.capabilities.has('gpt.consult')
         : name === 'soyo_development_decide' ? state.capabilities.has('host.root') && state.capabilities.has('gpt.review')
           : name === 'soyo_request_help' ? state.binding.session_class === 'public' && !state.binding.internal && !state.binding.task_continuation
-          : name === 'soyo_external_request' ? state.binding.session_class === 'owner_private' && !state.binding.internal && !state.binding.task_continuation
+          : name === 'soyo_external_request' ? state.binding.session_class === 'owner_private'
+          : name === 'soyo_attach_image' ? state.binding.session_class === 'owner_private' &&
+              (!state.binding.internal || state.binding.owner_continuation) && state.binding.lane !== 'action'
+          : name === 'soyo_recent_images' ? state.binding.session_class === 'owner_private' &&
+              (!state.binding.internal || state.binding.owner_continuation) && state.binding.lane !== 'action'
           : true));
       // A public turn may still use its scene's bounded QQ/read tools, but a
       // request originating outside the owner lane must not jump straight into
@@ -203,6 +211,8 @@ export class SoyoRoleRuntime {
        ] : []),
       ...(state.binding.session_class === 'public' && !state.binding.internal ? ['soyo_request_help'] : []),
       ...(state.binding.session_class === 'owner_private' && !state.binding.internal ? ['soyo_external_request'] : []),
+      ...(state.binding.session_class === 'owner_private' && (!state.binding.internal || state.binding.owner_continuation) &&
+        state.lane !== 'action' ? ['soyo_attach_image', 'soyo_recent_images'] : []),
       ...(state.capabilities.has('schedule.manage') ? [
         'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete',
       ] : []),
@@ -269,6 +279,14 @@ export class SoyoRoleRuntime {
     }
     if (exec.name === 'soyo_consult' && !state.capabilities.has('gpt.consult')) {
       throw Error('CAPABILITY_DENIED: GPT consultation is owner-private only');
+    }
+    // The tool list is kept stable per scene so the provider prompt prefix (and
+    // its cache) survives normal turns and internal report turns alike; the
+    // owner-only review entry is still refused where it must not run.
+    if (exec.name === 'soyo_external_request') {
+      if (state.binding.session_class !== 'owner_private') throw Error('CAPABILITY_DENIED: owner private chat only');
+      if (state.internal && !state.binding.owner_continuation && !state.binding.task_continuation)
+        throw Error('CAPABILITY_DENIED: internal report turns cannot open owner review entries');
     }
     return state;
   }

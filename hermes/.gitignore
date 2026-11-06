@@ -12,7 +12,7 @@ memories/
 state*
 *.db
 *.db-*
-*.json
+# 不再全局忽略 *.json：源码清单必须默认可跟踪，否则新清单会静默不同步
 *.png
 *.bak
 *.bak.*
@@ -30,23 +30,24 @@ HERMES_MEMORY_ARCH.md
 HERMES_REFACTOR_REPORT.md
 
 # ── 服务器私有工具/产物（不进 repo）──
-gen_*.py
-fetch_*.py
-generate_*.py
-send_image.py
-tts_server.py
-*.sh
-backups/
-build/
-data/
-docker/
-group_files/
-investigations/
-models/
-output/
-reports/
-sandboxes/
-subagents/
+# 根级脚本/产物（锚定到仓库根，避免误伤 core/ 内同名源码目录）
+/gen_*.py
+/fetch_*.py
+/generate_*.py
+/send_image.py
+/tts_server.py
+/*.sh
+/backups/
+/build/
+/data/
+/docker/
+/group_files/
+/investigations/
+/models/
+/output/
+/reports/
+/sandboxes/
+/subagents/
 /platforms/
 hermes_agent.egg-info/
 __pycache__/
@@ -88,12 +89,9 @@ modules/live2d/*.json
 
 # Source metadata is not deployment state. Keep the reviewed root manifest
 # visible to the surrounding distribution repository without exposing configs.
-!/package.json
-!/core/soyo/dsh/host/package.json
-!/core/soyo/dsh/dashboard/package.json
-!/core/soyo/dsh/asuna-ui/package.json
-!/core/soyo/dsh/asuna-ui/vendor/source.json
-!/core/soyo/dsh/asuna-ui/BUILD_MANIFEST.json
 !__main__.py
 # Reviewed platform-neutral source, not a runtime state file.
 !/core/soyo/social/state.py
+
+# DSH 运行时依赖锁由安装器在目标机生成（含平台相关 optional 依赖），不入库
+/core/soyo/dsh/host/runtime-lock.json

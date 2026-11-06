@@ -41,3 +41,53 @@ def test_broker_uses_only_explicit_bubblewrap_without_systemd_or_sudo(tmp_path, 
 def test_docker_requires_an_immutable_digest(monkeypatch, image):
     monkeypatch.setattr(sandbox.shutil, 'which', lambda value: '/fixture/docker')
     assert not sandbox.sandbox_available({'development': {'backend': 'docker', 'image': image}})
+
+
+def _capture_docker_argv(monkeypatch):
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        # `docker inspect` runs without captured streams; only the run itself
+        # carries a TemporaryFile for stderr.
+        if kwargs.get('stderr') is not None and hasattr(kwargs['stderr'], 'write'):
+            kwargs['stderr'].write(b'Ran 1 test in 0.001s\n\nOK\n')
+        return SimpleNamespace(returncode=0, stdout='')
+
+    monkeypatch.setattr(sandbox.shutil, 'which', lambda value: '/fixture/docker')
+    monkeypatch.setattr(sandbox.subprocess, 'run', run)
+    return commands
+
+
+DIGEST = 'docker.io/library/python@sha256:' + 'a' * 64
+
+
+def test_sandbox_network_is_denied_when_the_config_omits_the_key(tmp_path, monkeypatch):
+    """Outbound access is an explicit deployment choice, never an implicit one."""
+    commands = _capture_docker_argv(monkeypatch)
+    result = sandbox.run_sandbox({'development': {'backend': 'docker', 'image': DIGEST}},
+                                 tmp_path, ['python', '-m', 'pytest'])
+    assert result['exit_code'] == 0
+    assert '--network=none' in commands[0]
+    assert not any(item.startswith('--network=bridge') for item in commands[0])
+
+
+def test_sandbox_network_requires_an_explicit_true(tmp_path, monkeypatch):
+    commands = _capture_docker_argv(monkeypatch)
+    sandbox.run_sandbox({'development': {'backend': 'docker', 'image': DIGEST, 'network': True}},
+                        tmp_path, ['python', '-m', 'pytest'])
+    assert '--network=bridge' in commands[0]
+
+
+def test_sandbox_network_rejects_a_non_boolean_setting(tmp_path):
+    from soyo.app import config
+    home = tmp_path / 'instance'
+    value = config.initialize(home)
+    config.update(home, {'character_name': 'Fixture',
+        'models': {'character': {'name': 'fixture', 'base_url': 'http://127.0.0.1:12345/v1', 'auth_mode': 'none',
+            'api_key': '', 'api': 'openai-completions', 'context_window': 8192, 'max_tokens': 1024, 'vision': False}},
+        'action_uses_character': True}, value['revision'])
+    current = config.read_json(home / 'deployment.json')
+    current['development'] = {'backend': 'disabled', 'network': 'yes'}
+    with pytest.raises(ValueError, match='development.network'):
+        config.validate(current)

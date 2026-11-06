@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Install a reviewed prebuilt closure; no pip/npm/Git/compiler or provider discovery."""
 from __future__ import annotations
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -21,21 +22,55 @@ def relative(root, value):
     return root / path
 
 
-def manifest(root):
+def _signature(path):
+    """Cheap identity for a file's cached digest: size, mtime, ctime, inode."""
+    info = path.stat()
+    return [info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino]
+
+
+def manifest(root, cache_file=None):
     root = Path(root).resolve()
     value = json.loads((root / 'portable-manifest.json').read_text(encoding='utf-8'))
     expected = 'windows-x64' if os.name == 'nt' else 'linux-x64'
     if value.get('schema') != 1 or value.get('platform') != expected or platform.machine().lower() not in {'amd64', 'x86_64'}:
         raise ValueError('Download the prebuilt package for this OS and architecture')
+    # Verifying the full closure means hashing ~2.6 GiB on every update. Cache
+    # each file's digest against its stat identity so only new or touched files
+    # are read again; a manifest entry the cache cannot vouch for is still hashed.
+    cached = {}
+    if cache_file is not None and Path(cache_file).is_file():
+        try:
+            held = json.loads(Path(cache_file).read_text(encoding='utf-8'))
+            if held.get('bundle_id') == value.get('bundle_id') and isinstance(held.get('files'), dict):
+                cached = held['files']
+        except (OSError, ValueError):
+            cached = {}
+    pending, verified = [], dict(cached)
     for name, digest in value['files'].items():
         path = relative(root, name)
         path.resolve(strict=True).relative_to(root)
         if is_link(path) or not path.is_file():
             raise ValueError('Prebuilt file missing or modified: ' + name)
+        signature = _signature(path)
+        known = cached.get(name)
+        if isinstance(known, list) and len(known) == 5 and known[:4] == signature and known[4] == digest:
+            continue
+        pending.append((name, path, digest, signature))
+
+    def digest_of(item):
+        name, path, digest, signature = item
         with path.open('rb') as stream:
             actual = hashlib.file_digest(stream, 'sha256').hexdigest()
         if actual != digest:
             raise ValueError('Prebuilt file missing or modified: ' + name)
+        return name, signature + [digest]
+
+    if pending:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            for name, entry in pool.map(digest_of, pending):
+                verified[name] = entry
+    if cache_file is not None:
+        atomic_json(Path(cache_file), {'schema': 1, 'bundle_id': value.get('bundle_id'), 'files': verified})
     return root, value
 
 
@@ -56,7 +91,8 @@ def restore_links(root, value):
 
 
 def install(root, home):
-    root, value = manifest(root); home = home_path(home)
+    home = home_path(home)
+    root, value = manifest(root, Path(home) / 'private' / 'portable-verify-cache.json')
     bootstrap_directory(home); initialize(home)
     with file_lock(home / 'run/lifecycle.lock', blocking=False), file_lock(home / 'run/install.lock', blocking=False):
         require_stopped(home); restore_links(root, value)

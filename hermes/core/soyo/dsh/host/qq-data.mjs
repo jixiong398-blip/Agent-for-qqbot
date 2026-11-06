@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createMessage } from '@deepseek-ai/dsh-llm';
 import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol';
 import { openPrivate } from './platform.mjs';
+import { QQ_AGENT_PRESET_ID } from './qq-composition.mjs';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const clean = (value, length = 16000) => String(value ?? '').replace(/\bsk-[A-Za-z0-9_-]{16,}/g, '<credential-redacted>').slice(0, length);
@@ -32,7 +33,7 @@ async function privateRead(path) {
 }
 
 export class QQData {
-  constructor(ctx, config, read, jobs) { Object.assign(this, { ctx, config, read, jobs }); this.scenes = new Map(); }
+  constructor(ctx, config, read, jobs) { Object.assign(this, { ctx, config, read, jobs }); this.scenes = new Map(); this.projectedAt = new Map(); }
   async initialize() {
     this.path = join(this.config.native_root, 'scenes.json');
     try { for (const scene of await privateRead(this.path)) this.scenes.set(scene.route_id, scene); }
@@ -40,6 +41,47 @@ export class QQData {
     new DataApi(this.ctx, this);
   }
   bySession(id) { return [...this.scenes.values()].find(scene => scene.session_id === id && scene.enabled); }
+  /**
+   * Detect a session that predates the QQ Agent preset (or whose preset cannot
+   * be proven). The QQ lane mounts `soyo-qq-compaction` and must not silently
+   * adopt a session that may carry a different composition, but refusing
+   * outright would brick every existing deployment on upgrade. Rotate instead:
+   * the old log is archived intact and a fresh session starts clean.
+   */
+  async presetRotation(scene) {
+    let header;
+    try { header = (await this.ctx.sessionPersistence.stat(scene.session_id))?.header; }
+    catch (error) {
+      this.ctx.logger.warn('QQ preset check could not read the session header (%s)', error.name ?? 'Error');
+      return null;
+    }
+    if (!header) return null;
+    let events = [];
+    try {
+      const handle = await this.ctx.sessionPersistence.open(scene.session_id, 'read');
+      // A bounded prefix is enough: both the preset selection and the first
+      // turn are written when the log is created, and the check must not read
+      // an unbounded multi-year transcript on every start.
+      try { events = [...(await handle.read(0, 256)).events]; } finally { await handle.close(); }
+    } catch (error) {
+      // Unreadable is not proof of a QQ composition; leave the refusal to the
+      // QQ lane, which reports a precise preset error instead of guessing.
+      this.ctx.logger.warn('QQ preset check could not read the session log (%s)', error.name ?? 'Error');
+      return null;
+    }
+    const recorded = typeof header.agentPreset === 'string' ? header.agentPreset : null;
+    const selected = events.find(event => event.type === 'agent-preset/selected')?.data?.agentPreset;
+    const preset = typeof selected === 'string' ? selected : recorded;
+    if (preset === QQ_AGENT_PRESET_ID) return null;
+    if (preset) {
+      // Another composition owns this log (an operator opened native chat and
+      // picked the Web preset). Never rebind it; rotate with a distinct reason.
+      return { preset, reason: 'agent_preset_conflict' };
+    }
+    const hasTurns = events.some(event => event.type === 'turn/start');
+    if (!hasTurns) return null;
+    return { preset: null, reason: 'legacy_session_without_preset' };
+  }
   async configure(routes) {
     if (!Array.isArray(routes) || routes.length > 1000) throw Error('Invalid scene directory');
     const admitted = new Set();
@@ -50,7 +92,16 @@ export class QQData {
       const old = this.scenes.get(route.route_id);
       const epoch = this.config.qq_scene_session_epochs?.[route.route_id] ?? (route.message_type === 'private'
         ? (this.config.qq_private_session_epoch ?? 'live') : 'live');
-      const sessionId = 'soyo-qq-' + hash([this.config.account_id, route.route_id, epoch]).slice(0, 32);
+      const fixed = 'soyo-qq-' + hash([this.config.account_id, route.route_id, epoch]).slice(0, 32);
+      // An upgraded scene still points at the pre-preset log under the fixed
+      // id. Rotate once, deterministically, so the upgrade does not require a
+      // manual epoch edit; the archived log stays readable. A scene that was
+      // already rotated keeps its recorded id, so restarts never churn it.
+      const rotation = old?.session_id === fixed ? await this.presetRotation(old) : null;
+      const sessionId = old?.session_id && old.session_id !== fixed && !rotation
+        ? old.session_id
+        : (rotation ? 'soyo-qq-' + hash([this.config.account_id, route.route_id, epoch, rotation.reason]).slice(0, 32) : fixed);
+      if (rotation) this.ctx.logger.warn('QQ scene %s rotated for the Agent preset (%s)', route.route_id, rotation.reason);
       if (old?.session_id && old.session_id !== sessionId) {
         // An explicit operator recovery changes only this scene's session.
         // Preserve the prior log, even when native archive cannot decode it.
@@ -59,11 +110,14 @@ export class QQData {
       }
       const membershipChanged = old && JSON.stringify([...(old.members || [])].sort()) !== JSON.stringify([...(route.members || [])].sort());
       const scene = { ...old, ...route, name: clean(route.name || route.target_id, 80), enabled: true,
-        session_epoch: epoch, policy_epoch: (old?.policy_epoch ?? 1) + (membershipChanged ? 1 : 0), session_id: sessionId,
+        session_epoch: epoch, policy_epoch: (old?.policy_epoch ?? 1) + (membershipChanged || Boolean(rotation) ? 1 : 0), session_id: sessionId,
         ...(old?.session_id && old.session_id !== sessionId ? {
           predecessor_sessions: [...new Set([...(old.predecessor_sessions ?? []), old.session_id])],
-          recovery_reason: this.config.qq_scene_recovery_reasons?.[route.route_id] ?? 'operator_session_epoch',
+          recovery_reason: this.config.qq_scene_recovery_reasons?.[route.route_id]
+            ?? (rotation ? rotation.reason : 'operator_session_epoch'),
         } : {}) };
+      if (rotation) scene.preset_rotation = { reason: rotation.reason, previous_preset: rotation.preset,
+        to_preset: QQ_AGENT_PRESET_ID, rotated_at: Date.now() };
       this.scenes.set(route.route_id, scene); await this.ensure(scene);
     }
     for (const scene of this.scenes.values()) if (!admitted.has(scene.route_id)) scene.enabled = false;
@@ -94,32 +148,26 @@ export class QQData {
     const workspace = await this.ctx.workspaceRegistry.create(header.cwd, `${this.config.character_name || 'Bot'} · QQ`);
     await workspace.attachSession(scene.session_id);
   }
-  async project(route) {
+  async project(route, minIntervalMs = 60000) {
     const scene = this.scenes.get(route); if (!scene?.enabled) return;
-    const observation = await this.ctx.sessionQuery.observeSession(scene.session_id);
-    let events;
-    try { events = [...observation.events]; } finally { observation[Symbol.dispose](); }
-    // Do not forge a system head or create an Agent just to display ambient data.
-    // Before the first real @, source rows are already browsable in the data pane.
-    if (!events.some(event => event.type === 'system/message')) return;
+    // Projection only advances a read cursor; it is not a turn and never
+    // creates one. It is also the most expensive periodic call (one worker
+    // round trip per scene), so ambient /sync and /observe must not queue a
+    // fresh projection every few seconds — that starves the host event loop
+    // and delays outbox claims.
+    const now = Date.now();
+    if (now - (this.projectedAt.get(route) ?? 0) < minIntervalMs) return;
+    this.projectedAt.set(route, now);
+    // Ambient QQ messages are authoritative in the native corpus.  They are
+    // deliberately not projected into the durable DSH transcript: doing so
+    // makes a long-running scene grow without bound and cannot be repaired by
+    // automatic compaction because this path does not open a turn.  A real @
+    // obtains the same bounded background through native_memory.context and
+    // firstInputs(), while the data pane remains the read-only corpus surface.
     const page = await this.read({ action: 'projection', route, after: scene.projected_through ?? 0 });
     if (!page.rows.length) return;
-    const existing = new Set(events.filter(event => event.type === 'user/message').map(event => event.data.source?.receipt));
-    const added = page.rows.filter(row => !existing.has(receiptId({ ...row, route_id: route })))
-      .map(row => ({ type: 'user/message', data: channelMessage({ ...row, route_id: route }), surfaceOp: 'append' }));
-    const hot = this.ctx.sessions.get(scene.session_id);
-    if (hot) {
-      if (this.ctx.agents.get(scene.session_id)?.status === 'running') return;
-      for (const event of added) hot.append(event.type, event.data, { surfaceOp: event.surfaceOp });
-      await this.ctx.sessions.flush(hot);
-    } else {
-      const handle = await this.ctx.sessionPersistence.open(scene.session_id, 'write');
-      try {
-        for (const event of added) events.push({ ...event, seq: events.length, time: Date.now() });
-        if (added.length) await handle.append(events.slice(events.length - added.length));
-        await handle.flush(); await this.checkpoint(handle, events);
-      } finally { await handle.close(); }
-    }
+    // Advance only the native projection cursor.  This is a durable read
+    // acknowledgement, not a session write and never creates/replays a turn.
     scene.projected_through = Number(page.rows.at(-1).id); await save(this.path, [...this.scenes.values()]);
   }
   async firstInputs(agent, current, context) {

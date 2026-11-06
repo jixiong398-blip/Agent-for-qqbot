@@ -218,7 +218,7 @@ class InboundEnvelope:
             if not isinstance(item, Mapping):
                 raise ValueError("invalid media metadata")
             metadata = item.get("metadata", {})
-            if not isinstance(metadata, Mapping) or len(metadata) > 3:
+            if not isinstance(metadata, Mapping) or len(metadata) > 8:
                 raise ValueError("invalid media metadata")
             media.append(MediaRef(
                 kind=bounded_text(item.get("kind"), limit=40),
@@ -271,6 +271,7 @@ class OutboundIntent:
     reply_to: Optional[str] = None
     account_id: str = ""
     attachment: Optional[Mapping[str, Any]] = None
+    sticker: Optional[Mapping[str, Any]] = None
 
 
 @dataclass(frozen=True)

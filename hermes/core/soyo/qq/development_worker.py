@@ -46,6 +46,15 @@ def _call(config, args):
     operation = args.get("operation")
     validations = base.parent / "development-validations"
     validations.mkdir(mode=0o700, exist_ok=True)
+    if operation == "sandbox":
+        argv = args.get("argv")
+        if (not isinstance(argv, list) or not argv or len(argv) > 64
+                or any(not isinstance(item, str) or not item or len(item) > 2000 or "\x00" in item for item in argv)):
+            raise ValueError("bounded_argv_required")
+        timeout = args.get("timeout")
+        if timeout is not None and (type(timeout) is not int or not 1 <= timeout <= 120):
+            raise ValueError("bounded_timeout_required")
+        return run_sandbox(config, root, argv, network=args.get("network"), timeout=timeout)
     if operation == "import":
         return imported_snapshot(config, args.get("project_id"), root)
     def private_json(file):

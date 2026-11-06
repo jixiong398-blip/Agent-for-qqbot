@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from soyo.qq import (
+    BY_ID,
+    BY_NAME,
     ChannelRoute,
     OutboundIntent,
     OutboundPlanError,
@@ -43,6 +45,44 @@ def test_real_mentions_are_separate_from_plain_at_text():
     assert parsed.reply_to == "42"
     assert len(parsed.media) == 1
     assert "@not-a-mention" in parsed.text
+
+
+def test_qq_faces_keep_raw_names_ids_and_unknown_id_fallback():
+    parsed = parse_message([
+        {"type": "face", "data": {"id": "277", "raw": {"faceText": "/汪汪"}}},
+        {"type": "face", "data": {"id": "9999"}},
+    ])
+    assert len(BY_ID) == 289
+    assert BY_NAME["汪汪"] == "277"
+    assert parsed.media[0].placeholder == "[表情:汪汪]"
+    assert dict(parsed.media[0].metadata)["face_id"] == "277"
+    assert parsed.media[1].placeholder == "[表情:id-9999]"
+    assert BY_ID["424"] == "你不对劲"
+    assert BY_NAME["你不对劲"] == "424"
+    assert BY_NAME["续标识"] == "424"
+
+
+def test_qq_sticker_metadata_distinguishes_custom_market_and_photo():
+    parsed = parse_message([
+        {"type": "image", "data": {"file": "a" * 32 + ".gif", "sub_type": "1"}},
+        {"type": "image", "data": {"file": "b" * 32 + ".gif", "emoji_id": "e" * 32,
+                                       "emoji_package_id": "p", "key": "k"}},
+        {"type": "image", "data": {"file": "c" * 32 + ".jpg", "sub_type": "0"}},
+    ])
+    assert [dict(item.metadata).get("sticker") for item in parsed.media] == ["custom", "market", None]
+    assert parsed.media[0].placeholder == "[表情包]"
+    assert parsed.media[1].placeholder == "[表情包]"
+    assert parsed.media[2].placeholder == "[图片（未解析）]"
+
+
+def test_known_face_tokens_encode_to_real_face_segments_and_unknown_stays_text():
+    route = ChannelRoute("dm-face", "private", "100001", "900001")
+    plan = build_outbound_plan(
+        OutboundIntent("pub-face", "attempt-face", route.route_id, "private", route.target_id,
+                       "笑[表情:汪汪][表情:不存在]", account_id=route.account_id), route)
+    assert [segment["type"] for segment in plan.params["message"]] == ["text", "face", "text"]
+    assert plan.params["message"][1]["data"] == {"id": "277"}
+    assert plan.params["message"][2]["data"]["text"] == "[表情:不存在]"
 
 
 def test_inbound_requires_route_and_sender_snapshot():

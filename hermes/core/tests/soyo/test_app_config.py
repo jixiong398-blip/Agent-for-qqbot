@@ -86,6 +86,18 @@ def test_switching_model_clears_native_ui_route_selection(tmp_path):
     assert result['routes'] == {} and result['models']['action']['name'] == 'fixture-other-model'
 
 
+def test_qq_scene_epoch_metadata_is_explicit_and_bounded(tmp_path):
+    _, value = configured(tmp_path)
+    value['native_options'] = {
+        'qq_scene_session_epochs': {'qq-group-123456': 'rollout-20261024'},
+        'qq_scene_recovery_reasons': {'qq-group-123456': 'qq-compaction-rollout'},
+    }
+    config.validate(value, ready=True)
+    value['native_options']['qq_scene_session_epochs'] = {'group-123456': 'rollout-20261024'}
+    with pytest.raises(ValueError, match='epoch route'):
+        config.validate(value, ready=True)
+
+
 def test_persona_presets_back_up_and_detect_editor_conflicts(tmp_path):
     home, _ = configured(tmp_path)
     initial = persona.save(home, text='# First role')
@@ -115,6 +127,7 @@ def test_child_environment_retains_case_insensitive_os_keys_but_no_provider_secr
 
 def test_web_only_manager_never_initializes_napcat_or_gateway(tmp_path, monkeypatch):
     from soyo.app import manager, install
+    from soyo import transport
     from soyo.qq import runtime as qq_runtime
     home, _ = configured(tmp_path)
     config.atomic_json(home / 'private/runtime.json', {'directory': str(home / 'runtime'), 'node': 'node', 'cli': 'fixture-cli', 'source_fingerprint': 'fixture'})
@@ -127,11 +140,14 @@ def test_web_only_manager_never_initializes_napcat_or_gateway(tmp_path, monkeypa
     monkeypatch.setattr(instance, 'start_gateway', forbidden)
     spawned = []
     monkeypatch.setattr(instance, 'spawn', lambda name, *args, **kwargs: spawned.append(name) or SimpleNamespace(poll=lambda: None))
-    class Probe:
+    class Client:
+        # start_native() probes the public native ingress over plain HTTP; the
+        # private channel only starts after that readiness gate, so mocking
+        # private_client here would test a path the code no longer walks.
         def __enter__(self): return self
         def __exit__(self, *args): pass
-        def get(self, url): return SimpleNamespace(status_code=200)
-    monkeypatch.setattr(manager.httpx, 'Client', lambda *args, **kwargs: Probe())
+        def get(self, *args, **kwargs): return SimpleNamespace(status_code=200)
+    monkeypatch.setattr(manager.httpx, 'Client', lambda *args, **kwargs: Client())
     result = instance.start_native()
     assert spawned == ['web'] and result['mode'] == 'web-only'
     assert result['services']['gateway']['state'] == 'disabled'

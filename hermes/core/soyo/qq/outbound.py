@@ -25,12 +25,13 @@ from .contracts import (
     bounded_text,
     qq_id,
 )
+from .faces import TOKEN as FACE_TOKEN, id_of as face_id_of
 
 
 AT_MARKER = re.compile(r"(?<![A-Za-z0-9.@_-])@qq:([0-9]{1,20})(?![A-Za-z0-9_-])")
 SEND_ACTIONS = {"private": "send_private_msg", "group": "send_group_msg"}
-GROUP_SEGMENTS = frozenset({"reply", "text", "at"})
-PRIVATE_SEGMENTS = frozenset({"text", "reply"})
+GROUP_SEGMENTS = frozenset({"reply", "text", "at", "face"})
+PRIVATE_SEGMENTS = frozenset({"text", "reply", "face"})
 MAX_REPLY_PARTS = 64
 DEFAULT_REPLY_PART_CHARS = 1800
 
@@ -70,7 +71,31 @@ def encode_group_text(text: str) -> list[dict[str, Any]]:
     tail = text[position:]
     if tail:
         segments.append({"type": "text", "data": {"text": tail}})
-    return segments
+    return encode_faces(segments)
+
+
+def encode_faces(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for segment in segments:
+        if segment.get("type") != "text":
+            result.append(segment)
+            continue
+        value = str(segment.get("data", {}).get("text") or "")
+        cursor = 0
+        for match in FACE_TOKEN.finditer(value):
+            if match.start() > cursor:
+                result.append({"type": "text", "data": {"text": value[cursor:match.start()]}})
+            face_id = face_id_of(match.group(1))
+            result.append({"type": "face", "data": {"id": face_id}} if face_id else
+                          {"type": "text", "data": {"text": match.group(0)}})
+            cursor = match.end()
+        if cursor < len(value):
+            result.append({"type": "text", "data": {"text": value[cursor:]}})
+    return result
+
+
+def encode_private_text(text: str) -> list[dict[str, Any]]:
+    return encode_faces([{"type": "text", "data": {"text": text}}])
 
 
 def split_reply_text(
@@ -154,6 +179,7 @@ def build_outbound_plan(intent: OutboundIntent, route: ChannelRoute) -> Outbound
         raise OutboundPlanError("text_too_long")
     text = intent.text if isinstance(intent.text, str) else ""
     attachment = intent.attachment
+    sticker = intent.sticker
     if attachment is not None:
         if not isinstance(attachment, Mapping):
             raise OutboundPlanError("invalid_attachment")
@@ -165,7 +191,7 @@ def build_outbound_plan(intent: OutboundIntent, route: ChannelRoute) -> Outbound
         suffix = Path(file_path).suffix.lower()
         if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
             raise OutboundPlanError("unsupported_attachment")
-    if not text.strip() and attachment is None:
+    if not text.strip() and attachment is None and sticker is None:
         raise OutboundPlanError("empty_text")
     action = SEND_ACTIONS[intent.message_type]
     segments: list[dict[str, Any]] = []
@@ -178,18 +204,36 @@ def build_outbound_plan(intent: OutboundIntent, route: ChannelRoute) -> Outbound
         if text.strip():
             segments.extend(encode_group_text(text))
         if attachment is not None:
-            segments.append({"type": "image", "data": {"file": attachment["path"]}})
-        allowed = GROUP_SEGMENTS | {"image"}
+            image = {"file": attachment["path"]}
+            if attachment.get("sticker"):
+                image.update({"sub_type": 1, "summary": "[动画表情]"})
+            segments.append({"type": "image", "data": image})
+        if sticker is not None:
+            if sticker.get("kind") != "market":
+                raise OutboundPlanError("sticker_picture_missing")
+            if any(not isinstance(sticker.get(key), str) or not sticker[key] for key in ("emoji_id", "emoji_package_id", "key")):
+                raise OutboundPlanError("sticker_market_ids_missing")
+            segments.append({"type": "mface", "data": {key: sticker[key] for key in ("emoji_id", "emoji_package_id", "key", "summary") if sticker.get(key)}})
+        allowed = GROUP_SEGMENTS | {"image", "mface"}
         target_key = "group_id"
     else:
         reply_to = bounded_id(intent.reply_to, limit=MAX_REPLY_ID_CHARS)
         if intent.reply_to is not None and not reply_to: raise OutboundPlanError('invalid_reply_id')
         if reply_to: segments.append({'type': 'reply', 'data': {'id': reply_to}})
         if text.strip():
-            segments.append({"type": "text", "data": {"text": text}})
+            segments.extend(encode_private_text(text))
         if attachment is not None:
-            segments.append({"type": "image", "data": {"file": attachment["path"]}})
-        allowed = PRIVATE_SEGMENTS | {"image"}
+            image = {"file": attachment["path"]}
+            if attachment.get("sticker"):
+                image.update({"sub_type": 1, "summary": "[动画表情]"})
+            segments.append({"type": "image", "data": image})
+        if sticker is not None:
+            if sticker.get("kind") != "market":
+                raise OutboundPlanError("sticker_picture_missing")
+            if any(not isinstance(sticker.get(key), str) or not sticker[key] for key in ("emoji_id", "emoji_package_id", "key")):
+                raise OutboundPlanError("sticker_market_ids_missing")
+            segments.append({"type": "mface", "data": {key: sticker[key] for key in ("emoji_id", "emoji_package_id", "key", "summary") if sticker.get(key)}})
+        allowed = PRIVATE_SEGMENTS | {"image", "mface"}
         target_key = "user_id"
 
     if not segments:
@@ -218,18 +262,20 @@ def build_outbound_plans(
 ) -> list[OutboundPlan]:
     """Build the frozen sequence sent for one final publication.
 
-    The first part owns the reply segment.  An attachment is deliberately a
-    single-part publication; callers must not claim an image was delivered by
-    silently discarding it.
+    Each non-empty text line is its own QQ message (the old human-like
+    multiline delivery). An attachment is normally an image-only message of
+    its own; a one-line non-sticker reply may carry it together with the text.
+    A sticker is always its own message. Empty text with an attachment is one
+    image-only part.
     """
 
-    if intent.attachment is not None:
-        return [build_outbound_plan(intent, route)]
     if not isinstance(intent.text, str) or len(intent.text) > MAX_TEXT_CHARS:
         raise OutboundPlanError("invalid_text" if not isinstance(intent.text, str) else "text_too_long")
     parts = split_reply_text(intent.text, max_chars=max_chars, max_parts=max_parts)
     if not parts:
-        raise OutboundPlanError("empty_text")
+        if intent.attachment is None and intent.sticker is None:
+            raise OutboundPlanError("empty_text")
+        return [build_outbound_plan(intent, route)]
     result: list[OutboundPlan] = []
     for index, part in enumerate(parts):
         child = OutboundIntent(
@@ -243,6 +289,38 @@ def build_outbound_plans(
             account_id=intent.account_id,
         )
         result.append(build_outbound_plan(child, route))
+    if intent.attachment is not None or intent.sticker is not None:
+        is_sticker = intent.sticker is not None or (isinstance(intent.attachment, Mapping) and bool(intent.attachment.get("sticker")))
+        if len(parts) == 1 and not is_sticker:
+            # A single line and a picture belong together; anything longer
+            # keeps the picture as its own message.
+            child = OutboundIntent(
+                publication_id=intent.publication_id,
+                attempt_id=intent.attempt_id,
+                route_id=intent.route_id,
+                message_type=intent.message_type,
+                target_id=intent.target_id,
+                text=parts[0],
+                reply_to=intent.reply_to,
+                account_id=intent.account_id,
+                attachment=intent.attachment,
+            )
+            result[0] = build_outbound_plan(child, route)
+        else:
+            if len(result) >= max_parts:
+                raise OutboundPlanError("too_many_reply_parts")
+            child = OutboundIntent(
+                publication_id=intent.publication_id,
+                attempt_id=intent.attempt_id,
+                route_id=intent.route_id,
+                message_type=intent.message_type,
+                target_id=intent.target_id,
+                text="",
+                account_id=intent.account_id,
+                attachment=intent.attachment,
+                sticker=intent.sticker,
+            )
+            result.append(build_outbound_plan(child, route))
     return result
 
 

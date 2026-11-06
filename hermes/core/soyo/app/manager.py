@@ -32,6 +32,12 @@ class Manager:
         self.config = initialize(self.home)
         self.retained = read_json(self.home / "run/processes.json", default={})
         self.jobs = {}
+        self.gateway_desired = False
+        self.gateway_stopped_at = 0.0
+        self.gateway_failures = 0
+        self._watchdog_stop = threading.Event()
+        threading.Thread(target=self._gateway_watchdog, name="soyo-gateway-watchdog",
+                         daemon=True).start()
 
     def _redact(self, text):
         config = self.config
@@ -52,6 +58,36 @@ class Manager:
             text = text.replace(value, "<redacted>")
         import re
         return re.sub(r"(?i)(Bearer\s+\S+|sk-[A-Za-z0-9_-]{12,})", "<redacted>", text)[:8000]
+
+    def _gateway_watchdog(self):
+        """Reconnect a QQ writer whose heartbeat went stale; skip explicit stops."""
+        self.log("manager", "gateway watchdog started")
+        while not self._watchdog_stop.wait(15):
+            try:
+                now = time.time()
+                heartbeat = read_json(self.home / "run/gateway-status.json", default={})
+                try:
+                    updated = float(heartbeat.get("updated_at") or 0)
+                except (TypeError, ValueError):
+                    updated = 0.0
+                healthy = heartbeat.get("state") == "connected" and now - updated < 45
+                with self.lock:
+                    if healthy:
+                        self.gateway_failures = 0
+                        continue
+                    if now - self.gateway_stopped_at < 120:
+                        continue
+                    if not self.config.get("onebot", {}).get("enabled", False):
+                        continue
+                    if self.gateway_failures >= 3:
+                        continue
+                    self.gateway_failures += 1
+                    attempt = self.gateway_failures
+                self.log("manager", "gateway heartbeat stale; reconnecting (attempt %d)" % attempt)
+                self.connect_qq()
+            except Exception as error:
+                self.log("manager", "gateway reconnect failed: " + str(error))
+                self._watchdog_stop.wait(min(60, 5 * max(1, self.gateway_failures)))
 
     def log(self, service, text):
         line = self._redact(str(text).rstrip())
@@ -124,6 +160,9 @@ class Manager:
     def stop(self, name):
         if name not in {"web", "gateway", "napcat", "live2d"}:
             raise ValueError("Unknown managed service")
+        if name == "gateway":
+            self.gateway_desired = False
+            self.gateway_stopped_at = time.time()
         with self.lock:
             process = self._same_process(self.retained.get(name, {}))
             if process is None:
@@ -211,6 +250,7 @@ class Manager:
                 "AGENT_QQBOT_PROJECT": str(project_root()), "NODE_COMPILE_CACHE": str(compile_cache)})
             env.update(read_json(self.home / "private/model-environment.json", default={}))
             child = self.spawn("web", [runtime["node"], runtime["cli"], "--profile", self.config["profile"]], cwd=self.home / "workspace", env=env)
+            from soyo.transport import private_client
             try:
                 deadline = time.monotonic() + self.config["ready_timeout"]
                 ready = False
@@ -258,6 +298,9 @@ class Manager:
             if account != native['account_id']: raise ValueError('NapCat account does not match the selected Bot account')
         finally: napcat.client.close()
         self.start_gateway(read_json(self.home / 'private/runtime.json'))
+        with self.lock:
+            self.gateway_desired = True
+            self.gateway_failures = 0
 
     def start_gateway(self, runtime):
         if not self.config['onebot'].get('enabled', False):
@@ -268,7 +311,11 @@ class Manager:
         deadline = time.monotonic() + self.config['ready_timeout']
         while time.monotonic() < deadline and self.processes['gateway'].poll() is None:
             heartbeat = read_json(self.home / 'run/gateway-status.json', default={})
-            if heartbeat.get('state') == 'connected' and heartbeat.get('updated_at', 0) >= gateway_start: return
+            if heartbeat.get('state') == 'connected' and heartbeat.get('updated_at', 0) >= gateway_start:
+                with self.lock:
+                    self.gateway_desired = True
+                    self.gateway_failures = 0
+                return
             time.sleep(0.25)
         self.stop('gateway')
         raise RuntimeError('Native QQ transport did not become ready; no successful connection claimed')

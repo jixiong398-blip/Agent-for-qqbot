@@ -40,20 +40,51 @@ def render(home, config, runtime):
     standard = copy.deepcopy(yaml.load(standard_path.read_text(encoding="utf-8"), Loader=Loader)[0]["insert"][0]["config"])
     standard["plugins"][0] = {"id": "persona", "name": "@soyo/dsh-host-boundary/persona", "config": {
         "soulFile": str(home / "persona/SOUL.md"), "behaviorFile": str(home / "persona/BEHAVIOR.md")}}
+    qq_preset = {"id": "soyo-qq-compaction", "order": 2,
+        "name": "Soyo QQ bounded compaction",
+        "description": "QQ-only compaction services; no Web coding or delegation tools.",
+        "plugins": [{"id": "compaction", "name": "cordis:group", "group": True,
+            "isolate": {"compaction": True, "toolResultPruner": True}, "config": [
+                {"id": "compaction-basic", "name": "@deepseek-ai/dsh-compaction-basic",
+                 "config": {"thresholdRatio": 0.5, "retainRatio": 0.25, "auto": True}},
+                {"id": "tool-result-pruner", "name": "@deepseek-ai/dsh-compaction-tool-result-pruner",
+                 "config": {"thresholdChars": 8192, "headChars": 4096, "tailChars": 1024}},
+            ]}]}
+    standard_plugins = {item.get("id"): item for item in standard["plugins"]
+                        if isinstance(item, dict) and item.get("id")}
+    # The action preset composes existing services from the installed standard
+    # preset. A DSH build that renamed or dropped one of them must fail with a
+    # precise message instead of a bare KeyError during render.
+    required_action_plugins = ("agent-instructions", "time-context", "tool-web", "tool-todo")
+    absent = [name for name in required_action_plugins if name not in standard_plugins]
+    if absent:
+        raise ValueError("Installed DSH standard preset is missing services for the action brain: " + ", ".join(absent))
+    action_preset = {"id": "soyo-action-full", "order": 3,
+        "name": "Soyo action executor",
+        "description": "Owner-authorized action brain: instructions, web, todos, subagents, compaction.",
+        "plugins": [standard_plugins[name] for name in required_action_plugins]
+                   + [qq_preset["plugins"][0]]}
     providers, routes, credentials = {}, {}, {}
     entries = [("character", config["models"]["character"]), ("action", config["models"]["action"])]
+    if config["models"].get("action_owner"):
+        entries.append(("action-owner", config["models"]["action_owner"]))
     entries += [("fallback-" + str(i), item) for i, item in enumerate(config["models"].get("fallbacks", []))]
     for name, item in entries:
         provider, credential = "qqbot-" + name, "AGENT_QQBOT_KEY_" + name.replace("-", "_").upper()
         # pi-ai requires a nonempty resolved reference, even for a no-auth local
         # engine. This public placeholder is never a real provider credential.
         credentials[credential] = item["api_key"] if item.get("auth_mode", "bearer") == "bearer" else "local-no-key"
+        model_entry = {"id": item["name"], "name": item["name"], "contextWindow": item["context_window"],
+            "maxTokens": item["max_tokens"], "input": ["text", "image"] if item.get("vision") else ["text"],
+            "reasoningEfforts": item.get('reasoning_efforts') or (False if not item.get("reasoning_effort") or item['reasoning_effort'] == 'off' else
+                {item['reasoning_effort']: item['reasoning_effort']})}
+        if item.get("compat"):
+            model_entry["compat"] = item["compat"]
         providers[provider] = {"displayName": name, "apiKeyEnv": credential, "baseURL": item["base_url"],
-            "api": item["api"], "retryPolicy": {"mode": "normal", "maxRetries": 0},
-            "models": [{"id": item["name"], "name": item["name"], "contextWindow": item["context_window"],
-                "maxTokens": item["max_tokens"], "input": ["text", "image"] if item.get("vision") else ["text"],
-                "reasoningEfforts": item.get('reasoning_efforts') or (False if not item.get("reasoning_effort") or item['reasoning_effort'] == 'off' else
-                    {item['reasoning_effort']: item['reasoning_effort']})}]}
+            "api": item["api"], "retryPolicy": {"mode": "normal", "maxRetries": 2,
+                "retryableCodes": ["SERVER", "TIMEOUT", "TRANSPORT"],
+                "backoff": {"initialDelayMs": 1000, "maxDelayMs": 8000, "jitterRatio": 0.2}},
+            "models": [model_entry]}
         routes[name] = {"provider": provider, "model": item["name"], "maxTokens": item["max_tokens"]}
         if item.get("reasoning_effort") and (item['reasoning_effort'] != 'off' or item.get('reasoning_efforts')):
             routes[name]["reasoningEffort"] = item["reasoning_effort"]
@@ -64,8 +95,9 @@ def render(home, config, runtime):
         item = next(item for name, item in entries if 'qqbot-' + name == routes[lane]['provider'])
         if routes[lane].get('reasoningEffort') == 'off' and not item.get('reasoning_efforts'):
             routes[lane].pop('reasoningEffort')  # Non-reasoning models expose no selectable effort at all.
-    action_item = next(item for name, item in entries if 'qqbot-' + name == routes['action']['provider'])
-    action_credential = "AGENT_QQBOT_KEY_" + routes['action']['provider'].removeprefix('qqbot-').replace('-', '_').upper()
+    owner_route = routes["action-owner"] if "action-owner" in routes else routes["action"]
+    action_item = next(item for name, item in entries if 'qqbot-' + name == owner_route['provider'])
+    action_credential = "AGENT_QQBOT_KEY_" + owner_route['provider'].removeprefix('qqbot-').replace('-', '_').upper()
     if not (home / "persona/SOUL.md").is_file() or not (home / "persona/SOUL.md").read_text(encoding="utf-8").strip():
         raise ValueError("Create the private persona/SOUL.md before starting")
     if not (home / "persona/BEHAVIOR.md").exists():
@@ -98,8 +130,9 @@ def render(home, config, runtime):
         "lifecycle": {"mode": "supervisor"}, "catchup_enabled": False, "brain_mode": "character-action",
         "owner_sessions": [config["profile"] + "-owner"], "owner_session_id": config["profile"] + "-owner",
         "agent_options": routes["character"], "action_agent_options": routes["action"],
-        "collaborator": {**routes["action"], "label": config.get("action_label") or "行动助手", "max_tokens": routes["action"]["maxTokens"],
-            "reasoning_effort": routes["action"].get("reasoningEffort", ""), "session_id": config["profile"] + "-helper",
+        "owner_action_agent_options": routes.get("action-owner", routes["action"]),
+        "collaborator": {**owner_route, "label": config.get("action_label") or "行动助手", "max_tokens": owner_route["maxTokens"],
+            "reasoning_effort": owner_route.get("reasoningEffort", ""), "session_id": config["profile"] + "-helper",
             "credential_ref": action_credential, "key_file": str(home / "private/action-key"),
             "owner_sessions": [config["profile"] + "-owner"]},
         "reviewer": {"endpoint_origin": _origin(action_item["base_url"]), "wire_protocol": action_item['api'],
@@ -156,6 +189,9 @@ def render(home, config, runtime):
         {"id": "agent-default-model", "config": {k: routes["character"][k] for k in ("provider", "model")}},
         {"id": "llm-pi-ai", "config": {"providers": providers}},
         {"insert": [
+             {"id": "preset-soyo-qq-compaction", "name": "@deepseek-ai/dsh-agent-preset", "config": qq_preset},
+             {"id": "preset-soyo-action-full", "name": "@deepseek-ai/dsh-agent-preset", "config": action_preset},
+              {"id": "llm-retry", "name": "@deepseek-ai/dsh-llm-retry", "config": {}},
              {"id": "soyo-host-boundary", "name": "@soyo/dsh-host-boundary", "config": {"host": config["native_host"],
                 "port": config["native_port"], "accessKeyFile": str(home / "private/web-access-key"), "requireAccessKey": config["native_require_key"],
                 "setupApiURL": f'http://127.0.0.1:{config["management_port"]}/', "setupKeyFile": str(home / 'private/control-key')}},

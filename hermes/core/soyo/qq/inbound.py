@@ -28,6 +28,7 @@ from .contracts import (
     bounded_id,
     qq_id,
 )
+from .faces import name_of as face_name_of
 
 
 MEDIA_MODES = frozenset({"full", "annotate", "off"})
@@ -47,6 +48,7 @@ _MEDIA_LABELS = {
     "location": "位置",
     "poke": "戳一戳",
     "contact": "名片",
+    "mface": "表情包",
 }
 
 
@@ -124,12 +126,22 @@ def _event_time(event: Mapping[str, Any]) -> float:
 
 def _media_ref(segment_type: str, data: Mapping[str, Any]) -> MediaRef:
     label = _MEDIA_LABELS.get(segment_type, f"{segment_type or '未知'}消息")
+    face_name = face_name_of(data) if segment_type == "face" else ""
+    sticker = _sticker_kind(data) if segment_type in {"image", "mface"} else ""
+    if sticker:
+        label = "表情包"
     ref_value = data.get("url") or data.get("file") or data.get("file_id")
+    if segment_type == "image":
+        # NapCat can resolve this stable image handle from its local cache even
+        # after a QQ CDN URL's rkey expires. Never throw it away for the URL.
+        ref_value = data.get("file") or data.get("file_id") or data.get("url")
     if segment_type == "forward":
         ref_value = data.get("id") or data.get("message_id") or data.get("forward_id") or ref_value
     ref = _clean(ref_value, MAX_MEDIA_REF_CHARS)
-    name = _clean(data.get("file_name") or data.get("name") or data.get("summary"), 80)
-    known_content = segment_type in {"face", "location", "poke", "contact"}
+    name = face_name if segment_type == "face" else (_sticker_label(data, sticker) if sticker else _clean(data.get("file_name") or data.get("name") or data.get("summary"), 80))
+    known_content = segment_type in {"face", "location", "poke", "contact"} or bool(sticker)
+    # The model receives the original bytes separately.  Keep the text
+    # surface short and factual; it must not turn media into a prose claim.
     suffix = "" if known_content else "（未解析）"
     placeholder = f"[{label}:{name}{suffix}]" if name else f"[{label}{suffix}]"
     metadata: list[tuple[str, str]] = []
@@ -141,13 +153,46 @@ def _media_ref(segment_type: str, data: Mapping[str, Any]) -> MediaRef:
         value = _clean(data.get(source), limit)
         if value:
             metadata.append((target, value))
+    if segment_type == "face":
+        face_id = _clean(data.get("id") or data.get("face_id"), 20)
+        if face_id:
+            metadata.append(("face_id", face_id))
+        if face_name:
+            metadata.append(("face_name", face_name))
+        raw = data.get("raw") if isinstance(data.get("raw"), Mapping) else {}
+        raw_name = _clean(raw.get("faceText"), 40)
+        if raw_name and raw_name != face_name:
+            metadata.append(("face_raw_name", raw_name))
+    if sticker:
+        metadata.append(("sticker", sticker))
+        for source, limit in (("emoji_id", 64), ("emoji_package_id", 24), ("key", 64)):
+            value = _clean(data.get(source), limit)
+            if value:
+                metadata.append((source, value))
     return MediaRef(
         kind=segment_type or "unknown",
         placeholder=placeholder,
         ref=ref,
-        label=name,
-        metadata=tuple(metadata),
+        label=name or _sticker_label(data, sticker),
+        metadata=tuple(metadata[:8]),
     )
+
+
+STICKER_SUB_TYPES = frozenset({"1", "7"})
+MARKET_HOST = "gxh.vip.qq.com"
+
+
+def _sticker_kind(data: Mapping[str, Any]) -> str:
+    if data.get("emoji_id") or MARKET_HOST in str(data.get("url") or ""):
+        return "market"
+    return "custom" if _clean(data.get("sub_type"), 12) in STICKER_SUB_TYPES else ""
+
+
+def _sticker_label(data: Mapping[str, Any], kind: str) -> str:
+    if kind == "market":
+        label = _clean(data.get("summary"), 80).strip("[]【】 ")
+        return "" if label in {"动画表情", "图片", "表情包"} else label
+    return ""
 
 
 def parse_message(message: Any) -> ParsedMessage:

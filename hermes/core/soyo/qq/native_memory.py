@@ -11,15 +11,35 @@ import hashlib
 import sqlite3
 import sys
 import time
+import os
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
+STICKER_SHELF = 60
+STICKER_POOL = 30
+STICKER_POOL_HOURS = 24 * 14
+
+_initialized = set()
+_schema_lock = threading.Lock()
+
 if __package__:
-    from . import native_cognition, native_goals
+    from .media_cache import lookup as cached_media, record as cache_record
+    from .native_tools import read_media
+    from . import native_cognition, native_goals, native_recall
 else:
     # Native Host invokes this file as a subprocess, not as a package module.
+    # The private worker environment intentionally strips ambient PYTHONPATH;
+    # make the repository's core package root explicit for direct entrypoint
+    # execution, matching the packaged Host spawn contract.
+    _core_root = str(Path(__file__).resolve().parents[2])
+    if _core_root not in sys.path:
+        sys.path.insert(0, _core_root)
+    from media_cache import lookup as cached_media, record as cache_record
+    from native_tools import read_media
     import native_cognition
     import native_goals
+    import native_recall
 
 
 @contextmanager
@@ -31,6 +51,20 @@ def connect(config):
     db = sqlite3.connect(path, timeout=10)
     path.chmod(0o600)
     db.row_factory = sqlite3.Row
+    identity = (str(path), path.stat().st_ino)
+    with _schema_lock:
+        if identity not in _initialized:
+            initialize(db)
+            _initialized.add(identity)
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
+
+
+def initialize(db):
+    """Run migrations once per database identity, not on every hot-path call."""
     db.executescript("""
         CREATE TABLE IF NOT EXISTS messages (
             seq INTEGER PRIMARY KEY, route TEXT NOT NULL, event TEXT NOT NULL,
@@ -101,7 +135,20 @@ def connect(config):
             publication_id TEXT NOT NULL, platform_message_id TEXT NOT NULL,
             sender TEXT NOT NULL DEFAULT '', content TEXT NOT NULL,
             occurred_at REAL NOT NULL, created_at REAL NOT NULL,
-            UNIQUE(route, platform_message_id));
+             UNIQUE(route, platform_message_id));
+        CREATE TABLE IF NOT EXISTS sticker_pool (
+            fingerprint TEXT PRIMARY KEY, kind TEXT NOT NULL, ref TEXT NOT NULL DEFAULT '',
+            label TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '{}',
+            first_seen REAL NOT NULL, last_seen REAL NOT NULL, seen INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS stickers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+            fingerprint TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, ref TEXT NOT NULL DEFAULT '',
+            label TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '{}',
+            note TEXT NOT NULL DEFAULT '', kept_at REAL NOT NULL, sent INTEGER NOT NULL DEFAULT 0,
+            last_sent_at REAL NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS sticker_memory (
+            fingerprint TEXT PRIMARY KEY, name TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+            state TEXT NOT NULL DEFAULT 'kept', updated_at REAL NOT NULL);
     """)
     if "scope" not in {row[1] for row in db.execute("PRAGMA table_info(self_state)")}:
         db.execute("ALTER TABLE self_state ADD COLUMN scope TEXT NOT NULL DEFAULT 'owner'")
@@ -116,26 +163,175 @@ def connect(config):
             db.commit()
     native_cognition.initialize(db)
     native_goals.initialize(db)
-    try:
-        with db:
-            yield db
-    finally:
-        db.close()
+    db.commit()
 
 
 def record(config, envelope):
     with connect(config) as db:
+        return record_in(db, envelope, config)
+
+
+def record_in(db, envelope, config=None):
         # QQ can reuse a message id. Keep legacy rows intact, but use the
         # original send time in all newly persisted identities.
         old = db.execute("SELECT body FROM messages WHERE route=? AND event=?",
                          (envelope["route_id"], envelope["event_id"])).fetchone()
         if old and int(json.loads(old[0]).get("occurred_at", 0)) == int(envelope["occurred_at"]):
-            return
+            _observe_sticker_pool(db, envelope, float(envelope.get("occurred_at") or time.time()), config)
+            return False
         identity = hashlib.sha256(json.dumps([envelope["route_id"], envelope["event_id"],
                                               int(envelope["occurred_at"])], separators=(",", ":")).encode()).hexdigest()
+        body = json.dumps(envelope, ensure_ascii=False)
         db.execute("INSERT OR IGNORE INTO messages(route,event,sender,body) VALUES(?,?,?,?)",
                    (envelope["route_id"], identity, envelope["sender_id"],
-                    json.dumps(envelope, ensure_ascii=False)))
+                      body))
+        inserted = db.execute("SELECT changes()").fetchone()[0] == 1
+        if inserted:
+            _observe_sticker_pool(db, envelope, float(envelope.get("occurred_at") or time.time()), config)
+        return inserted
+
+
+def _media_metadata(item):
+    metadata = item.get("metadata") if isinstance(item, dict) else {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _sticker_fingerprint(item, config=None):
+    metadata = _media_metadata(item)
+    kind = str(metadata.get("sticker") or "")
+    if kind not in {"custom", "market"}:
+        return ""
+    if kind == "market" and metadata.get("emoji_id"):
+        return "market:" + str(metadata["emoji_id"])[:64]
+    ref = str(item.get("ref") or "").rsplit("/", 1)[-1]
+    stem = ref.rsplit(".", 1)[0]
+    if len(stem) == 32 and all(c in "0123456789abcdefABCDEF" for c in stem):
+        return "md5:" + stem.lower()
+    if config and item.get("ref"):
+        cached = cached_media(config, str(item["ref"]))
+        if cached and cached.get("sha256"):
+            return "sha256:" + str(cached["sha256"])[:64]
+    return ""
+
+
+def _observe_sticker_pool(db, envelope, moment, config=None):
+    """Persist only explicitly marked sticker media; photos never enter the pool."""
+    if not str(envelope.get("route_id") or "").startswith("qq-group-"):
+        return
+    for item in (envelope.get("media") or [])[:8]:
+        if not isinstance(item, dict):
+            continue
+        fingerprint = _sticker_fingerprint(item, config)
+        if not fingerprint:
+            continue
+        known = db.execute("SELECT 1 FROM stickers WHERE fingerprint=? UNION SELECT 1 FROM sticker_memory WHERE fingerprint=?", (fingerprint, fingerprint)).fetchone()
+        if known:
+            continue
+        metadata = _media_metadata(item)
+        encoded = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+        row = db.execute("SELECT seen FROM sticker_pool WHERE fingerprint=?", (fingerprint,)).fetchone()
+        if row:
+            db.execute("UPDATE sticker_pool SET last_seen=?,seen=seen+1,ref=?,label=?,metadata=? WHERE fingerprint=?",
+                       (moment, str(item.get("ref") or "")[:2048], str(item.get("label") or "")[:80], encoded[:1600], fingerprint))
+        else:
+            db.execute("INSERT INTO sticker_pool(fingerprint,kind,ref,label,metadata,first_seen,last_seen,seen) VALUES(?,?,?,?,?,?,?,1)",
+                       (fingerprint, metadata.get("sticker"), str(item.get("ref") or "")[:2048], str(item.get("label") or "")[:80], encoded[:1600], moment, moment))
+    extra = db.execute("SELECT COUNT(*)-? FROM sticker_pool", (STICKER_POOL,)).fetchone()[0]
+    if extra > 0:
+        db.execute("DELETE FROM sticker_pool WHERE fingerprint IN (SELECT fingerprint FROM sticker_pool ORDER BY last_seen ASC LIMIT ?)", (extra,))
+
+
+def _sticker_context(db, route, sender, message_type, now):
+    rows = db.execute("SELECT name,note,sent,last_sent_at FROM stickers ORDER BY name LIMIT ?", (STICKER_SHELF,)).fetchall()
+    result = {"shelf": [{"name": row["name"], "note": row["note"], "used": row["sent"]} for row in rows]}
+    if message_type == "group":
+        candidates = db.execute("SELECT fingerprint,ref,label,seen,kind FROM sticker_pool WHERE last_seen>=? ORDER BY seen DESC,last_seen DESC LIMIT 4", (now - STICKER_POOL_HOURS,)).fetchall()
+        result["candidates"] = [{"candidate": row["fingerprint"], "ref": row["ref"], "label": row["label"], "seen": row["seen"], "kind": row["kind"]} for row in candidates]
+    return result if rows or result.get("candidates") else None
+
+
+def _sticker_name(value, field="name"):
+    value = " ".join(str(value or "").split())
+    if not 1 <= len(value) <= 12 or any(char in value for char in "[]:"):
+        raise ValueError("sticker %s must be 1-12 chars without []:" % field)
+    return value
+
+
+def _sticker_note(value):
+    value = " ".join(str(value or "").split())
+    if not 1 <= len(value) <= 80:
+        raise ValueError("sticker note must be 1-80 chars")
+    return value
+
+
+def _sticker_cache(config, ref, metadata):
+    cached = cached_media(config, ref)
+    if cached:
+        return cached
+    fetched = read_media(config, {"op": "media", "kind": "image", "ref": ref})
+    if not fetched.get("ok"):
+        return None
+    return cache_record(config, ref, "image", fetched)
+
+
+def sticker_call(db, config, args, now):
+    op = str(args.get("op") or "list")
+    if op in {"list", "pool"}:
+        context = _sticker_context(db, str(args.get("route_id") or ""), str(args.get("sender_id") or ""), str(args.get("message_type") or "group"), now) or {"shelf": [], "candidates": []}
+        if op == "pool": return {"state": "listed", "candidates": context.get("candidates", [])}
+        return {"state": "listed", **context}
+    if op == "keep":
+        name, note, fingerprint = _sticker_name(args.get("name")), _sticker_note(args.get("note") or args.get("when")), str(args.get("fingerprint") or "")[:160]
+        if db.execute("SELECT COUNT(*) FROM stickers").fetchone()[0] >= STICKER_SHELF:
+            raise ValueError("STICKER_SHELF_FULL")
+        if db.execute("SELECT 1 FROM stickers WHERE name=?", (name,)).fetchone():
+            raise ValueError("STICKER_NAME_TAKEN")
+        row = db.execute("SELECT * FROM sticker_pool WHERE fingerprint=?", (fingerprint,)).fetchone()
+        if not row:
+            raise ValueError("STICKER_CANDIDATE_GONE")
+        metadata = json.loads(row["metadata"] or "{}")
+        if row["kind"] == "custom" and not _sticker_cache(config, row["ref"], metadata):
+            raise ValueError("STICKER_NOT_REACHABLE")
+        db.execute("INSERT INTO stickers(name,fingerprint,kind,ref,label,metadata,note,kept_at) VALUES(?,?,?,?,?,?,?,?)",
+                   (name, fingerprint, row["kind"], row["ref"], row["label"], row["metadata"], note, now))
+        db.execute("INSERT OR REPLACE INTO sticker_memory(fingerprint,name,note,state,updated_at) VALUES(?,?,?,?,?)",
+                   (fingerprint, name, note, "kept", now))
+        db.execute("DELETE FROM sticker_pool WHERE fingerprint=?", (fingerprint,))
+        return {"state": "kept", "name": name, "shelf_count": db.execute("SELECT COUNT(*) FROM stickers").fetchone()[0]}
+    if op == "drop":
+        name = _sticker_name(args.get("name"))
+        row = db.execute("SELECT fingerprint FROM stickers WHERE name=?", (name,)).fetchone()
+        if not row: raise ValueError("STICKER_NOT_ON_SHELF")
+        db.execute("DELETE FROM stickers WHERE name=?", (name,))
+        db.execute("UPDATE sticker_memory SET state='dropped',updated_at=? WHERE fingerprint=?", (now, row["fingerprint"]))
+        return {"state": "dropped", "name": name}
+    if op == "rename":
+        old, new = _sticker_name(args.get("name")), _sticker_name(args.get("new_name"), "new_name")
+        if db.execute("SELECT 1 FROM stickers WHERE name=?", (new,)).fetchone(): raise ValueError("STICKER_NAME_TAKEN")
+        row = db.execute("SELECT fingerprint FROM stickers WHERE name=?", (old,)).fetchone()
+        if not row: raise ValueError("STICKER_NOT_ON_SHELF")
+        db.execute("UPDATE stickers SET name=?,note=? WHERE name=?", (new, _sticker_note(args.get("note") or args.get("when") or "已整理"), old))
+        db.execute("UPDATE sticker_memory SET name=?,note=?,updated_at=? WHERE fingerprint=?", (new, _sticker_note(args.get("note") or args.get("when") or "已整理"), now, row["fingerprint"]))
+        return {"state": "renamed", "name": new}
+    if op == "resolve":
+        name = _sticker_name(args.get("name"))
+        row = db.execute("SELECT * FROM stickers WHERE name=?", (name,)).fetchone()
+        if not row: return {"state": "missing"}
+        metadata = json.loads(row["metadata"] or "{}")
+        if row["kind"] == "market":
+            result = {"state": "resolved", "kind": "market", "name": name, **{key: metadata[key] for key in ("emoji_id", "emoji_package_id", "key") if metadata.get(key)}}
+        else:
+            cached = _sticker_cache(config, row["ref"], metadata)
+            if not cached: return {"state": "unavailable", "reason": "STICKER_NOT_REACHABLE"}
+            result = {"state": "resolved", "kind": "custom", "name": name, "path": cached["path"], "media_type": cached.get("media_type"), "sha256": cached.get("sha256"), "bytes": cached.get("bytes")}
+        return result
+    if op == "mark_sent":
+        name = _sticker_name(args.get("name"))
+        if not db.execute("SELECT 1 FROM stickers WHERE name=?", (name,)).fetchone():
+            return {"state": "missing"}
+        db.execute("UPDATE stickers SET sent=sent+1,last_sent_at=? WHERE name=?", (now, name))
+        return {"state": "sent", "name": name}
+    raise ValueError("unsupported sticker operation")
 
 
 def call(config, args):
@@ -160,8 +356,43 @@ def call(config, args):
         return knowledge_call(config, args, authorized=privileged)
     with connect(config) as db:
         now = time.time()
+        # A probe turn may build the same scene context (recent messages/media)
+        # but must not write memory: it is a diagnostic read, not a real turn.
+        readonly = bool(args.get("readonly"))
+        if action == "prepare_context":
+            inputs = args.get("inputs") or [args]
+            if not isinstance(inputs, list) or len(inputs) > 32:
+                raise ValueError("bounded current inputs required")
+            for envelope in inputs:
+                if (envelope.get("route_id") != route or envelope.get("sender_id") != sender or
+                        envelope.get("message_type") != args.get("message_type")):
+                    raise ValueError("current inputs cannot cross actors/scenes")
+                if not readonly:
+                    record_in(db, envelope, config)
+                    if str(envelope.get("text") or "").strip():
+                        db.execute("INSERT OR IGNORE INTO turns(route,session_id,role,sender,event_id,content,occurred_at,created_at) VALUES(?,?,'user',?,?,?,?,?)",
+                            (route, route, sender, envelope["event_id"], envelope["text"], envelope["occurred_at"], now))
+            # The boundary uses the latest admitted source, while the complete
+            # batch is supplied separately to the native Agent without truncation.
+            action = "context"
+        elif action == "context":
+            # The gateway has already durably admitted the source. Index the
+            # user turn in the same SQLite transaction that builds its context;
+            # this keeps the hot path single-write and makes read-your-writes
+            # explicit without a second pre-host worker call.  A readonly probe
+            # skips both writes and only reads the scene.
+            if not readonly:
+                record_in(db, args, config)
+                if str(args.get("text") or "").strip():
+                    db.execute(
+                        "INSERT OR IGNORE INTO turns(route,session_id,role,sender,event_id,content,occurred_at,created_at) VALUES(?,?,'user',?,?,?,?,?)",
+                        (route, str(args.get("session_id") or route), sender, args["event_id"],
+                         str(args.get("text") or "")[:16000], float(args.get("occurred_at") or now), now),
+                    )
         if action in native_cognition.ACTIONS:
             return native_cognition.call(db, config, args)
+        if action == "sticker":
+            return sticker_call(db, config, args, now)
         if action in {"legacy_inspect", "legacy_stage", "legacy_apply"}:
             if not privileged:
                 raise ValueError("legacy memory operator grant required")
@@ -486,17 +717,26 @@ def call(config, args):
             result['speak_from_program'] = {'one_self': '你保持私有人格文件中的同一身份，同时在不同会话生活；你在这里说过的话就是你自己说的。这里不带其他场景的聊天或权限。'}
             # Only enum/intensity from public native Soyo expressions may linger
             # across scenes. All source text/person records stay in their scene.
-            for scope in [row[0] for row in db.execute("SELECT DISTINCT scope FROM cognition WHERE kind='emotion' AND status='promoted' AND scope LIKE 'qq-group-%'")]:
-                native_cognition.invalidate_recalled(db, scope, now, [scope])
+            if not readonly:
+                for scope in [row[0] for row in db.execute("SELECT DISTINCT scope FROM cognition WHERE kind='emotion' AND status='promoted' AND scope LIKE 'qq-group-%'")]:
+                    native_cognition.invalidate_recalled(db, scope, now, [scope])
             result['lingering_self_affect'] = native_cognition.native_reflection.shared_affect(db, now)
             # Only the admitted @/DM asks for a context build. Ambient events just INSERT.
             boundary = db.execute("SELECT seq FROM messages WHERE route IN (" +
                                    ",".join("?" for _ in domain_routes) + ") AND json_extract(body,'$.event_id')=? "
                                    "AND CAST(json_extract(body,'$.occurred_at') AS INTEGER)=? ORDER BY seq DESC LIMIT 1",
                                    (*domain_routes, args["event_id"], int(args["occurred_at"]))).fetchone()
+            if boundary is None:
+                # A readonly probe has not admitted its own event yet, so it is
+                # absent from the corpus.  Fall back to the current tail of the
+                # scene so recent messages and their media are still visible;
+                # the caller excludes the probe event by event_id regardless.
+                boundary = db.execute("SELECT COALESCE(MAX(seq),0) FROM messages WHERE route IN (" +
+                                       ",".join("?" for _ in domain_routes) + ")", domain_routes).fetchone()
+            recent_limit = max(10, min(200, int(config.get("qq_recent_message_limit", 60))))
             rows = db.execute("SELECT route,body FROM messages WHERE route IN (" +
-                              ",".join("?" for _ in domain_routes) + ") AND seq<=? ORDER BY seq DESC LIMIT 30",
-                              (*domain_routes, boundary[0] if boundary else 0)).fetchall()
+                              ",".join("?" for _ in domain_routes) + ") AND seq<=? ORDER BY seq DESC LIMIT ?",
+                              (*domain_routes, boundary[0] if boundary else 0, recent_limit)).fetchall()
             result["recent"] = [{key: value for key, value in json.loads(row["body"]).items()
                                  if key in {"route_id", "event_id", "sender_id", "text", "occurred_at", "media", "reply_to", "forward_context"}}
                                  for row in reversed(rows)]
@@ -505,7 +745,7 @@ def call(config, args):
                               (item.get("route_id") or route, item["event_id"])).fetchone():
                     item["text"] = "[该来源已撤回]"; item["media"] = []; item.pop("forward_context", None); item["recalled"] = True
                 else:
-                    item["text"] = item["text"][:800]
+                    item["text"] = str(item.get("text") or "")[:2400]
             for item in result["facts"] + result["legacy"]:
                 item["value"] = str(item["value"])[:800]
             summaries = []
@@ -557,14 +797,14 @@ def call(config, args):
             # context only; delivery still requires a separate platform
             # receipt and is never inferred here.
             assistant_rows = db.execute(
-                "SELECT sender,event_id,content,occurred_at FROM turns "
+                "SELECT sender,event_id,content,occurred_at,platform_message_id FROM turns "
                 "WHERE route IN (" + ",".join("?" for _ in turn_scopes) + ") AND role='assistant' "
                 "ORDER BY occurred_at DESC,id DESC LIMIT 12",
                 turn_scopes,
             ).fetchall()
             result["assistant_recent"] = [
                 {"role": "assistant", "sender": row["sender"], "event_id": row["event_id"],
-                 "content": str(row["content"])[:4000], "occurred_at": row["occurred_at"]}
+                  "content": str(row["content"])[:4000], "occurred_at": row["occurred_at"]}
                 for row in reversed(assistant_rows)
             ]
             reply_id = str(args.get("reply_to") or "")[:160]
@@ -608,6 +848,35 @@ def call(config, args):
             else:
                 result["reply_context"] = {"state": "not_requested"}
             result["scene_state"] = dict(db.execute("SELECT attentive,silent_count,episode_phase,turn_count,decision_epoch,updated_at FROM scene_state WHERE route=?", (route,)).fetchone() or {})
+            # The legacy-shaped fields above remain for existing data/UI
+            # consumers.  The QQ Host prompt uses this single bounded surface
+            # so source classes cannot independently grow the prompt.  The
+            # current user text is candidate-recall input only; the model still
+            # decides whether any candidate is relevant or should be spoken.
+            context_query = str(args["query"] if "query" in args else args.get("text") or "")[:240]
+            current_event = str(args.get("event_id") or "")
+            surface_recent = [item for item in result.get("recent", [])
+                              if str(item.get("event_id") or "") != current_event
+                              and not item.get("recalled")]
+            recall = native_recall.collect(
+                db, config, route, context_query, now,
+                excluded_events={current_event},
+            )
+            result["memory_surface"] = native_recall.build_surface(
+                recall,
+                recent=surface_recent,
+                assistant_recent=result.get("assistant_recent"),
+                reply_context=result.get("reply_context"),
+                commitments=result.get("commitments"),
+                self_state=result.get("self_state"),
+                people=result.get("people"),
+                emotions=result.get("emotions"),
+                scene_state=result.get("scene_state"),
+            )
+            sticker_context = _sticker_context(db, route, sender, args.get("message_type"), now)
+            if sticker_context:
+                result["stickers_from_program"] = sticker_context
+                result["memory_surface"]["stickers_from_program"] = sticker_context
             # Legacy remains an explicit operator source in recall; it is never
             # silently injected into the resident scene context.
             result["legacy"] = []
@@ -617,5 +886,17 @@ def call(config, args):
 if __name__ == "__main__":
     from soyo.platform import load_private_json
     config = load_private_json(Path(sys.argv[1]))
-    arguments = json.loads(sys.stdin.buffer.read(64 * 1024))
-    print(json.dumps(call(config, arguments), ensure_ascii=False))
+    if "--stream" in sys.argv[2:]:
+        for line in sys.stdin.buffer:
+            request = {}
+            try:
+                if len(line) > 2 * 1024 * 1024:
+                    raise ValueError("bounded worker request required")
+                request = json.loads(line)
+                result = {"id": request["id"], "result": call(config, request["args"])}
+            except Exception as error:
+                result = {"id": request.get("id"), "error": type(error).__name__}
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+    else:
+        arguments = json.loads(sys.stdin.buffer.read(2 * 1024 * 1024))
+        print(json.dumps(call(config, arguments), ensure_ascii=False))

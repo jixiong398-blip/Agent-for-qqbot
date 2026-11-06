@@ -39,6 +39,20 @@ def _serialized(method: Callable[..., Any]) -> Callable[..., Any]:
     return call
 
 
+def _lane(name):
+    """Serialize one I/O owner without excluding unrelated ingress/egress."""
+    def decorate(method):
+        @functools.wraps(method)
+        def call(self, *args, **kwargs):
+            with getattr(self, name):
+                with self._worker_lock:
+                    if self._closed:
+                        raise RuntimeError("QQ channel is closed")
+                return method(self, *args, **kwargs)
+        return call
+    return decorate
+
+
 @dataclass(frozen=True)
 class ChannelConfig:
     account_id: str
@@ -77,6 +91,12 @@ class SoyoQQChannel:
                                      float(config.chunk_delay_seconds), config.reply_part_chars,
                                      config.max_reply_parts, str(config.attachment_root or ""))
         self._worker_lock = threading.RLock()
+        self._inbound_lock = threading.RLock()
+        self._send_lock = threading.RLock()
+        self._receipt_lock = threading.RLock()
+        self._poll_lock = threading.RLock()
+        self._control_wake = threading.Event()
+        self._attempts_recovered = False
         self._closed = False
         self._now = now_fn
         self.routes = MappingProxyType(self._route_map(routes))
@@ -140,8 +160,12 @@ class SoyoQQChannel:
         self.counters.inc("inbound_spooled")
         return decision
 
-    @_serialized
-    def submit_pending_inbound(self, host: HostPort, *, limit: int = MAX_SPOOL_ITEMS_PER_CALL) -> int:
+    @_lane("_inbound_lock")
+    def submit_pending_inbound(
+        self, host: HostPort, *, limit: int = MAX_SPOOL_ITEMS_PER_CALL,
+        skip: Callable[[InboundEnvelope], bool] | None = None,
+        record_fn: Callable[[Mapping[str, Any]], Any] | None = None,
+    ) -> int:
         submitted = 0
         processed = 0
         budget = self._limit(limit)
@@ -167,6 +191,15 @@ class SoyoQQChannel:
                 self.journal.append("inbound_rejected", {"reason": "route_revoked", "item": blob})
                 self.journal.finish_inbound(path, envelope, "route_revoked")
                 self.counters.inc("inbound_rejected")
+                continue
+            if record_fn is not None:
+                try:
+                    record_fn(envelope.as_dict())
+                except Exception:
+                    self._retry(path, blob, MAX_EVENT_TRIES)
+                    self.counters.inc("inbound_record_retries")
+                    continue
+            if skip is not None and skip(envelope):
                 continue
             if (envelope.message_type == "group" and self.config.require_group_mention
                     and (envelope.historical or envelope.account_id not in envelope.mentioned_account_ids)):
@@ -196,7 +229,7 @@ class SoyoQQChannel:
                 self.counters.inc("inbound_retries")
         return submitted
 
-    @_serialized
+    @_lane("_send_lock")
     def process_outbox_claim(self, claim: OutboxClaim, platform: PlatformPort, host: HostPort) -> Receipt:
         """A publication is fenced before sending, including across restart.
 
@@ -243,10 +276,23 @@ class SoyoQQChannel:
         # If persistence above fails, send is never invoked.  If the process
         # exits anywhere after it, recovery is conservative and never re-sends.
         part_receipts: list[Receipt] = []
+        cancelled = False
         try:
             for index, plan in enumerate(plans):
                 if index:
-                    time.sleep(self.config.chunk_delay_seconds)
+                    self._control_wake.wait(self.config.chunk_delay_seconds)
+                self._control_wake.clear()
+                # The Host linearizes cancellation against a per-part send
+                # permit. No channel state lock spans this HTTP operation.
+                authorize = getattr(host, "authorize_send", None)
+                if authorize is not None and not authorize(claim, index):
+                    cancelled = True
+                    break
+                with self._worker_lock:
+                    current = self.routes.get(intent.route_id)
+                    if current is None or not current.matches_target(intent.message_type, intent.target_id):
+                        cancelled = True
+                        break
                 response = platform.send(plan)
                 part_receipts.append(classify_send_response(
                     response, publication_id=claim.publication_id,
@@ -261,6 +307,9 @@ class SoyoQQChannel:
             if uncertain or (failed and accepted):
                 status = "unknown"
                 reason = "partial_platform_uncertain" if accepted else "platform_part_unknown"
+            elif cancelled:
+                status = "failed"
+                reason = "partial_cancelled" if accepted else "cancelled_before_send"
             elif failed:
                 status = "failed"
                 reason = "platform_part_failed"
@@ -271,6 +320,8 @@ class SoyoQQChannel:
                 "parts": [item.as_dict() for item in part_receipts],
                 "part_count": len(part_receipts),
                 "planned_parts": len(plans), "cancelled_parts": len(plans) - len(part_receipts),
+                "accepted_part_indices": [i for i, item in enumerate(part_receipts) if item.status == "platform_accepted"],
+                **({"delivery_state": "partial_cancelled" if accepted else "cancelled"} if cancelled else {}),
             }
             receipt = Receipt(
                 claim.publication_id, claim.attempt_id, status, reason,
@@ -286,7 +337,7 @@ class SoyoQQChannel:
         self.counters.inc("outbox_" + receipt.status)
         return receipt
 
-    @_serialized
+    @_lane("_receipt_lock")
     def recover_pending_attempts(self) -> int:
         """Rebuild missing receipt queues from durable fences; no platform port."""
 
@@ -298,11 +349,13 @@ class SoyoQQChannel:
             receipt = self._recover_attempt(record)
             self.journal.queue_receipt(receipt)
             count += 1
+        self._attempts_recovered = True
         return count
 
-    @_serialized
+    @_lane("_receipt_lock")
     def replay_receipts(self, host: HostPort, *, limit: int = MAX_SPOOL_ITEMS_PER_CALL) -> int:
-        self.recover_pending_attempts()
+        if not self._attempts_recovered:
+            self.recover_pending_attempts()
         reported = 0
         processed = 0
         budget = self._limit(limit)
@@ -315,7 +368,7 @@ class SoyoQQChannel:
                 reported += int(self._post_saved_receipt(host, path, blob))
         return reported
 
-    @_serialized
+    @_lane("_poll_lock")
     def poll_outbox(self, host: HostPort, platform: PlatformPort, *, wait_seconds: int = 0) -> tuple[Receipt, ...]:
         """One bounded claim cycle, receipts first; not an implicit daemon."""
 
@@ -332,11 +385,15 @@ class SoyoQQChannel:
             self.counters.inc("outbox_claim_errors")
         return tuple(self.process_outbox_claim(claim, platform, host) for claim in claims)
 
+    def notify_control(self) -> None:
+        """Wake the pacing timer; the authoritative Host still rechecks scope."""
+        self._control_wake.set()
+
     def _intent_from_claim(self, claim: OutboxClaim) -> OutboundIntent:
         item = claim.item
         # Do not silently discard media/admin/raw-segment obligations and then
         # claim success for a text-only send.
-        for key in ("attachments", "sticker", "media", "message", "segments", "admin"):
+        for key in ("attachments", "media", "message", "segments", "admin"):
             if key in item and item[key] is not None and item[key] != []:
                 raise OutboundPlanError("unsupported_outbox_content")
         if item.get("kind", "message") != "message":
@@ -354,6 +411,9 @@ class SoyoQQChannel:
         if not route_id or not target_id:
             raise OutboundPlanError("target_identity_missing")
         attachment = item.get("attachment")
+        sticker = item.get("sticker")
+        if sticker is not None and not isinstance(sticker, Mapping):
+            raise OutboundPlanError("unsupported_outbox_content")
         if attachment is not None:
             if not isinstance(attachment, Mapping) or not isinstance(attachment.get("path"), str):
                 raise OutboundPlanError("unsupported_outbox_content")
@@ -385,7 +445,7 @@ class SoyoQQChannel:
         return OutboundIntent(
             claim.publication_id, claim.attempt_id, route_id, message_type,
             target_id, item.get("text", ""), item.get("reply_to"), qq_id(item.get("account_id")),
-            attachment,
+            attachment, sticker,
         )
 
     def _save_attempt(self, receipt: Receipt, fingerprint: str, *, phase: str) -> None:

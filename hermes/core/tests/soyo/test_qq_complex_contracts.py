@@ -115,3 +115,57 @@ def test_private_quote_only_on_the_first_frozen_part():
     plans = build_outbound_plans(intent, route)
     assert plans[0].params['message'][0] == {'type': 'reply', 'data': {'id': '42'}}
     assert all(row['type'] != 'reply' for row in plans[1].params['message'])
+
+
+def test_multiline_text_and_picture_are_separate_messages(tmp_path):
+    image = tmp_path / "picture.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    route = ChannelRoute("qq-private-100001", "private", "100001", "900001")
+    intent = OutboundIntent("pub", "attempt", route.route_id, "private", "100001",
+                            "first\nsecond", account_id="900001",
+                            attachment={"path": str(image), "media_type": "image/png"})
+    plans = build_outbound_plans(intent, route)
+    assert len(plans) == 3
+    assert plans[0].segment_types == ("text",)
+    assert plans[1].segment_types == ("text",)
+    assert plans[2].segment_types == ("image",)
+    assert plans[2].params["message"] == [{"type": "image", "data": {"file": str(image)}}]
+
+
+def test_single_line_and_picture_may_share_one_message(tmp_path):
+    image = tmp_path / "picture.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    route = ChannelRoute("qq-private-100001", "private", "100001", "900001")
+    intent = OutboundIntent("pub", "attempt", route.route_id, "private", "100001",
+                            "one line", account_id="900001",
+                            attachment={"path": str(image), "media_type": "image/png"})
+    plans = build_outbound_plans(intent, route)
+    assert len(plans) == 1
+    assert plans[0].segment_types == ("text", "image")
+
+
+def test_a_sticker_is_always_its_own_message(tmp_path):
+    image = tmp_path / "sticker.gif"
+    image.write_bytes(b"GIF89a")
+    route = ChannelRoute("qq-private-100001", "private", "100001", "900001")
+    intent = OutboundIntent("pub", "attempt", route.route_id, "private", "100001",
+                            "one line", account_id="900001",
+                            attachment={"path": str(image), "media_type": "image/gif",
+                                        "sticker": True})
+    plans = build_outbound_plans(intent, route)
+    assert len(plans) == 2
+    assert plans[0].segment_types == ("text",)
+    assert plans[1].segment_types == ("image",)
+
+
+def test_attachment_only_publication_is_one_image_part(tmp_path):
+    image = tmp_path / "sticker.gif"
+    image.write_bytes(b"GIF89a")
+    route = ChannelRoute("qq-private-100001", "private", "100001", "900001")
+    intent = OutboundIntent("pub", "attempt", route.route_id, "private", "100001", "",
+                            account_id="900001",
+                            attachment={"path": str(image), "media_type": "image/gif"})
+    plans = build_outbound_plans(intent, route)
+    assert len(plans) == 1
+    assert plans[0].segment_types == ("image",)
+    assert plans[0].params["message"] == [{"type": "image", "data": {"file": str(image)}}]

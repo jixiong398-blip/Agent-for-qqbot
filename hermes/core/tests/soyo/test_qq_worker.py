@@ -5,7 +5,8 @@ from dataclasses import replace
 import pytest
 
 from soyo.qq import (CatchupPolicy, CatchupRunner, ChannelConfig, ChannelRoute, HistoryPage,
-                     OutboxClaim, PortResult, SeenLRU, SoyoQQChannel)
+                     InboundEnvelope, OutboxClaim, PortResult, SeenLRU, SoyoQQChannel)
+from soyo.qq.runtime import FIXED_SL_REPLY, is_fixed_sl_event
 
 
 ROUTE = ChannelRoute("fixture-group", "group", "123456", "900001", frozenset({"100001"}))
@@ -16,6 +17,28 @@ def _event():
             "group_id": ROUTE.target_id, "user_id": "100001", "message_id": "message-1",
             "message": [{"type": "at", "data": {"qq": ROUTE.account_id}},
                         {"type": "text", "data": {"text": "fixture"}}]}
+
+
+def test_fixed_sl_shortcut_is_exact_and_group_only():
+    envelope = InboundEnvelope(
+        route_id=ROUTE.route_id, account_id=ROUTE.account_id, message_type="group",
+        target_id=ROUTE.target_id, sender_id="100001", event_id="sl-1", text="#sl",
+    )
+    assert is_fixed_sl_event(envelope)
+    assert FIXED_SL_REPLY == "SnowLuma 状态\n版本: 6.789.13\n平台: 沉思者阵列\n运行时长: 40个千年"
+    assert not is_fixed_sl_event(replace(envelope, text="#sl now"))
+    assert not is_fixed_sl_event(replace(envelope, message_type="private", target_id="100001"))
+
+
+def test_fixed_sl_spool_is_skipped_by_model_submit(tmp_path):
+    ports = Ports()
+    event = {**_event(), "message_id": "sl-message",
+             "message": [{"type": "text", "data": {"text": "#sl"}}]}
+    with _channel(tmp_path) as channel:
+        assert channel.ingest_onebot_event(event).accepted
+        assert channel.submit_pending_inbound(ports, skip=is_fixed_sl_event) == 0
+        assert channel.journal.spool_list("inbound")
+    assert not ports.events
 
 
 def _claim(**extra):
@@ -144,7 +167,7 @@ def test_group_ambient_history_and_reply_are_local_only_but_live_self_at_submits
         assert channel.ingest_onebot_event({**_event(), "message_id": "historical"}, historical=True).accepted
         assert channel.ingest_onebot_event(_event()).accepted
         assert channel.submit_pending_inbound(ports) == 1
-        retained = (channel.journal.journal_root / "inbound_context_only.jsonl").read_text(encoding="utf-8")
+        retained = (channel.journal.journal_root / "inbound_context_only.jsonl").read_text()
         assert all(item["message_id"] in retained for item in events)
         assert "historical" in retained
         assert not channel.journal.spool_list("inbound")

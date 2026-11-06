@@ -36,6 +36,9 @@ ACTIONS = READ_ACTIONS | {"cognition_apply", "cognition_dispatched", "cognition_
 SECRET = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}|(?:access_token|api_key|app_secret)\s*[:=]", re.I)
 QQ_ROUTE = re.compile(r"qq-(group|private)-[1-9][0-9]{0,19}")
 WEB_ROUTE = re.compile(r"dsh-owner:([A-Za-z0-9_.:-]{1,160})")
+WORKFLOW_HALF_LIFE_DAYS = 1.0
+WORKFLOW_MIN_WEIGHT = 0.02
+WORKFLOW_MAX_WEIGHT = 1.0
 
 
 def initialize(db):
@@ -92,6 +95,29 @@ def number(value, low, high):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
         raise ValueError("bounded finite cognition weight required")
     return float(value)
+
+
+def workflow_strength(row, now=None):
+    """Return the read-only workflow candidate weight.
+
+    Listing or indexing a workflow never changes its counters.  Only the
+    explicit ``workflow_used`` mutation reinforces it.  The formula is kept
+    bounded and deterministic so prompt ranking has one inspectable contract.
+    """
+    now = time.time() if now is None else now
+    try:
+        salience = max(0.0, min(1.0, float(row["salience"] or .5)))
+        uses = max(0, int(row["uses"] or 0))
+        successes = max(0, min(uses, int(row["successes"] or 0)))
+        last_used = float(row["last_used"] or 0)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return WORKFLOW_MIN_WEIGHT
+    age_days = max(0.0, (now - last_used) / 86400.0) if last_used > 0 else 30.0
+    decay = math.pow(.5, age_days / WORKFLOW_HALF_LIFE_DAYS)
+    success_ratio = successes / max(1, uses)
+    usage_bonus = min(.35, math.log1p(uses) / math.log(51) * .35)
+    value = salience * (.5 + .5 * success_ratio) * decay + usage_bonus
+    return max(WORKFLOW_MIN_WEIGHT, min(WORKFLOW_MAX_WEIGHT, value))
 
 
 def owner_ids(config):
@@ -460,7 +486,10 @@ def mutate(db, route, args, config=None, *, operator=False):
         succeeded = args.get("success") is True
         db.execute("UPDATE cognition SET uses=uses+1,successes=successes+?,last_used=? WHERE id=?",
                    (int(succeeded), now, row["id"]))
-        return {"state": "workflow_usage_recorded", "success": succeeded}
+        updated = db.execute("SELECT * FROM cognition WHERE id=?", (row["id"],)).fetchone()
+        return {"state": "workflow_usage_recorded", "success": succeeded,
+                "uses": updated["uses"], "successes": updated["successes"],
+                "effective_weight": round(workflow_strength(updated, now), 4)}
     reason = bounded(args.get("reason"), 500, "correction reason")
     status = "forgotten" if action == "forget_memory" else "promoted"
     body = row["body"] if action == "forget_memory" else bounded(args.get("body"), 4000, "corrected body")

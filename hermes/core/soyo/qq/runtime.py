@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
+from concurrent.futures import ThreadPoolExecutor
 import inspect
 import json
 import logging
@@ -30,10 +32,19 @@ from .contracts import InboundEnvelope, qq_id
 from .inbound import parse_message
 from .journal import SoyoQQJournal
 from .native_memory import call as memory_call, record
-from .native_tools import call as native_tool_call
+from .native_tools import call as native_tool_call, read_media
+from .media_cache import precache as precache_media
+from .outbound import classify_send_response
 
 
 log = logging.getLogger("soyo.qq.native")
+
+
+# This is a host-owned compatibility shortcut, not a model capability.  Keep
+# both the trigger and response exact so an action-brain edit cannot turn it
+# into arbitrary group publication.
+FIXED_SL_TRIGGER = "#sl"
+FIXED_SL_REPLY = "SnowLuma 状态\n版本: 6.789.13\n平台: 沉思者阵列\n运行时长: 40个千年"
 
 
 def private_config(path):
@@ -79,6 +90,22 @@ class NapCat:
             raise ValueError("unsupported send")
         # Exactly one attempt; the caller has already fsynced its fence.
         return self.action(plan.action, dict(plan.params))
+
+    def send_fixed_sl_reply(self, group_id: str):
+        """Send the one deployment-owned ``#sl`` response.
+
+        This narrow method is deliberately separate from ``native_tools``:
+        model-authored actions still cannot send ordinary group text.  The
+        caller has already admitted the exact inbound event and route.
+        """
+
+        target = qq_id(group_id)
+        if not target:
+            raise ValueError("fixed reply group id required")
+        return self.action("send_group_msg", {
+            "group_id": int(target),
+            "message": [{"type": "text", "data": {"text": FIXED_SL_REPLY}}],
+        })
 
     def routes(self):
         if qq_id(self.read("get_login_info").get("user_id")) != self.config["account_id"]:
@@ -189,6 +216,65 @@ def resolve_reply_context(config, envelope: dict) -> dict:
         return {"state": "unavailable", "message_id": reply_id, "reason": type(error).__name__}
 
 
+def is_fixed_sl_event(envelope: InboundEnvelope) -> bool:
+    """Recognize only the exact plain-text group shortcut."""
+
+    return (envelope.message_type == "group" and envelope.text.strip() == FIXED_SL_TRIGGER
+            and not envelope.media and not envelope.reply_to and not envelope.forward_refs
+            and not envelope.mentioned_account_ids)
+
+
+def handle_fixed_sl(config, channel: SoyoQQChannel, napcat: NapCat,
+                    envelope: InboundEnvelope) -> None:
+    """Deliver ``#sl`` without waking DSH or involving a model.
+
+    The inbound event is still in the journal until the platform attempt
+    finishes.  We record the corpus row, perform one bounded platform
+    attempt, retain the platform result in native outbound history, and then
+    tombstone the inbound item.  Unknown outcomes are never retried
+    automatically because a second fixed message could duplicate a
+    successful platform send.
+    """
+
+    publication_id = "qq-fixed-sl-" + hashlib.sha256(envelope.event_id.encode("utf-8")).hexdigest()[:40]
+    attempt_id = publication_id + "-attempt"
+    status = "unknown"
+    receipt_data = None
+    try:
+        try:
+            record(config, envelope.as_dict())
+        except Exception:
+            # The durable channel spool is already the delivery fence.  A
+            # memory-index write must not prevent this fixed compatibility
+            # reply from reaching OneBot.
+            log.warning("Fixed #sl inbound memory record deferred")
+        response = napcat.send_fixed_sl_reply(envelope.target_id)
+        receipt = classify_send_response(response, publication_id=publication_id, attempt_id=attempt_id)
+        status = receipt.status
+        receipt_data = receipt.as_dict()
+        if receipt.status == "platform_accepted" and receipt.platform_message_id:
+            try:
+                memory_call(config, {
+                    "action": "record_outbound", "route_id": envelope.route_id,
+                    "sender_id": config["account_id"], "publication_id": publication_id,
+                    "platform_message_id": receipt.platform_message_id,
+                    "content": FIXED_SL_REPLY, "occurred_at": time.time(),
+                })
+            except Exception:
+                log.warning("Fixed #sl outbound history record deferred")
+        log.info("Fixed #sl reply outcome=%s event_id=%s", receipt.status, envelope.event_id)
+    except Exception as error:
+        receipt_data = {"status": status, "error_type": type(error).__name__}
+        log.warning("Fixed #sl reply failed (%s) event_id=%s", type(error).__name__, envelope.event_id)
+    channel.journal.append("fixed_sl_result", {
+        "event_id": envelope.event_id, "route_id": envelope.route_id,
+        "status": status, "receipt": receipt_data,
+    })
+    path = channel.journal.inbound_root / (channel.journal.event_key(envelope) + ".json")
+    if path.exists():
+        channel.journal.finish_inbound(path, envelope, "fixed_sl_" + status)
+
+
 class NativeHost:
     def __init__(self, config):
         self.config = config
@@ -201,37 +287,13 @@ class NativeHost:
         return value
 
     def post_event(self, envelope):
-        record(self.config, envelope)
-        try:
-            memory_call(self.config, {**envelope, "action": "record_turn", "role": "user",
-                "content": envelope.get("text", ""), "session_id": envelope.get("route_id", ""),
-                "route_id": envelope["route_id"], "sender_id": envelope["sender_id"],
-                "message_type": envelope.get("message_type")})
-        except Exception:
-            log.warning("Native user turn memory record deferred")
-        try:
-            memory_call(self.config, {**envelope, "action": "social_event",
-                                      "mentioned": bool(envelope.get("mentioned_account_ids")),
-                                      "route_id": envelope["route_id"], "sender_id": envelope["sender_id"],
-                                      "message_type": envelope.get("message_type")})
-        except Exception:
-            pass
-        args = dict(envelope, action="context")
-        context = memory_call(self.config, args)
-        if context.get("reply_context", {}).get("state") not in {"resolved", "recalled"}:
-            context["reply_context"] = resolve_reply_context(self.config, envelope)
-        context["forward_context"] = resolve_forward_context(self.config, envelope)
-        if context["forward_context"].get("state") != "not_requested":
-            try:
-                memory_call(self.config, {"action": "attach_forward", "route_id": envelope["route_id"],
-                    "sender_id": envelope["sender_id"], "message_type": envelope.get("message_type"),
-                    "event_id": envelope["event_id"], "forward_context": context["forward_context"]})
-            except Exception:
-                log.warning("Native forward context persistence deferred")
+        # The durable inbound spool is the source fence. Context construction,
+        # user-turn indexing and social side effects belong to the native host,
+        # after admission, and must not hold the OneBot submitter open here.
         # The QQ adapter speaks the same normalized channel API as the
         # character runtime.  The private legacy aliases remain available for
         # recovery, but new input goes through the canonical event resource.
-        result = self.request("/v1/channels/qq/events", {"envelope": envelope, "context": context})
+        result = self.request("/v1/channels/qq/events", {"envelope": envelope, "context": {}})
         return PortResult(result["kind"], payload={key: value for key, value in result.items() if key != "kind"})
 
     def register_routes(self, routes, names):
@@ -240,12 +302,18 @@ class NativeHost:
             "members": sorted(row.allowed_sender_ids)} for row in routes]})
 
     def observe(self, envelope):
-        record(self.config, envelope)
         return self.request("/observe", {"envelope": envelope})
 
     def claim_outbox(self, *, wait_seconds=0):
-        result = self.request("/v1/channels/qq/outbox")
+        result = self.request("/v1/channels/qq/outbox", {"wait_seconds": int(wait_seconds)})
         return PortResult("items", payload={"items": result["items"]})
+
+    def authorize_send(self, claim, part_index):
+        result = self.request("/v1/channels/qq/outbox/authorize", {
+            "publication_id": claim.publication_id, "attempt_id": claim.attempt_id,
+            "part_index": int(part_index),
+        })
+        return result.get("kind") in {"accepted", "duplicate"}
 
     def post_receipt(self, publication_id, receipt):
         result = self.request("/v1/channels/qq/outbox/" + quote(str(publication_id), safe="") + "/receipt",
@@ -334,9 +402,32 @@ def other_gateway_idle(config):
         raise RuntimeError("Competing Gateway is active or unknown; refusing OneBot writer")
 
 
+def wait_transport(label, call, config, timeout_key="host_ready_timeout_seconds"):
+    """Retry a transport call while the peer is still starting; never mask auth errors."""
+    timeout = max(0.0, float(config.get(timeout_key, 90)))
+    deadline = time.monotonic() + timeout
+    delay = 1.0
+    while True:
+        try:
+            return call()
+        except (httpx.TransportError, httpx.TimeoutException, OSError) as error:
+            if time.monotonic() + delay > deadline:
+                raise
+            log.warning("%s not ready (%s); retrying in %.0fs", label, type(error).__name__, delay)
+            time.sleep(delay)
+            delay = min(5.0, delay * 2)
+
+
 async def serve(config):
     await asyncio.to_thread(other_gateway_idle, config)
     stop = asyncio.Event()
+    # Inbound media is cached when the event arrives, independent of whether a
+    # later turn, @ mention or action delegation ever asks to understand it.
+    media_cache_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="soyo-media-cache")
+    inbound_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="soyo-inbound-submit")
+    outbox_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="soyo-outbox-writer")
+    event_gate = asyncio.Semaphore(32)
+    event_tasks: set[asyncio.Task] = set()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT, *((signal.SIGBREAK,) if hasattr(signal, 'SIGBREAK') else ())):
         try:
@@ -345,9 +436,11 @@ async def serve(config):
             signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
     napcat, host = NapCat(config), NativeHost(config)
     transport_connected = False
-    routes = await asyncio.to_thread(napcat.routes)
-    await asyncio.to_thread(host.request, "/v1/channels/qq/status")
-    await asyncio.to_thread(host.register_routes, routes, napcat.names)
+    routes = await asyncio.to_thread(wait_transport, "NapCat", napcat.routes, config)
+    await asyncio.to_thread(wait_transport, "DSH host",
+                            lambda: host.request("/v1/channels/qq/status"), config)
+    await asyncio.to_thread(wait_transport, "DSH host",
+                            lambda: host.register_routes(routes, napcat.names), config)
     log.info("DSH QQ admission: mention-only; final-only; authorized routes=%d", len(routes))
     with SoyoQQChannel(config=ChannelConfig(
                            config["account_id"],
@@ -369,16 +462,10 @@ async def serve(config):
             sync = 0
             while not stop.is_set():
                 try:
-                    # Keep the uncached writer check before every publication
-                    # cycle, but never block WebSocket admission on systemd I/O.
-                    await asyncio.to_thread(other_gateway_idle, config)
-                    for path in channel.journal.spool_list("inbound"):
-                        blob = channel.journal.read_json(path)
-                        record(config, InboundEnvelope.from_dict(blob["envelope"]).as_dict())
-                    await asyncio.to_thread(channel.submit_pending_inbound, host)
-                    receipts = await asyncio.to_thread(channel.poll_outbox, host, napcat)
-                    for receipt in receipts:
-                        log.info("DSH QQ publication outcome=%s", receipt.status)
+                    submit = functools.partial(channel.submit_pending_inbound, host,
+                                               skip=is_fixed_sl_event,
+                                               record_fn=lambda value: record(config, value))
+                    await loop.run_in_executor(inbound_pool, submit)
                     if time.monotonic() >= refresh:
                         current_routes = await asyncio.to_thread(napcat.routes)
                         channel.replace_routes(current_routes)
@@ -402,7 +489,61 @@ async def serve(config):
                 except TimeoutError:
                     pass
 
+        async def outbox_tick():
+            # The outbox has its own writer-checked loop. Inbound spooling,
+            # route refresh and systemd probing must not delay a finished QQ
+            # publication by a whole tick. The idle check runs inside the same
+            # dedicated thread so a saturated default executor (ambient /observe
+            # calls) can never stall publishing.
+            def outbox_cycle():
+                other_gateway_idle(config)
+                return channel.poll_outbox(host, napcat, wait_seconds=int(config.get("outbox_wait_seconds", 5)))
+            while not stop.is_set():
+                try:
+                    started = time.monotonic()
+                    receipts = await loop.run_in_executor(outbox_pool, outbox_cycle)
+                    elapsed = time.monotonic() - started
+                    if elapsed > 4:
+                        log.warning("DSH outbox poll slow (%.1fs); host may be busy", elapsed)
+                    for receipt in receipts:
+                        log.info("DSH QQ publication outcome=%s", receipt.status)
+                except RuntimeError:
+                    stop.set()
+                    raise
+                except Exception as error:
+                    log.warning("DSH outbox poll failed (%s); no unfenced retry", type(error).__name__)
+                try:
+                    await asyncio.wait_for(stop.wait(), 0.2)
+                except TimeoutError:
+                    pass
+
+        async def handle_admitted(envelope: InboundEnvelope) -> None:
+            async with event_gate:
+                if is_fixed_sl_event(envelope):
+                    await asyncio.to_thread(handle_fixed_sl, config, channel, napcat, envelope)
+                    return
+                cached = envelope.as_dict()
+                if envelope.media:
+                    def _precache(value=cached):
+                        try:
+                            result = precache_media(config, value, read_media)
+                            if result["missed"]:
+                                log.warning("Inbound media cache deferred: %s", result["missed"])
+                        except Exception:
+                            log.warning("Inbound media cache deferred")
+                    media_cache_pool.submit(_precache)
+                try:
+                    await asyncio.to_thread(host.request, "/observe", {"envelope": cached})
+                except httpx.HTTPError:
+                    log.warning("Native source projection deferred; durable corpus retained")
+
+        def schedule_admitted(envelope: InboundEnvelope) -> None:
+            task = asyncio.create_task(handle_admitted(envelope))
+            event_tasks.add(task)
+            task.add_done_callback(event_tasks.discard)
+
         ticker = asyncio.create_task(tick())
+        outbox_ticker = asyncio.create_task(outbox_tick())
         catchup_done = False
         try:
             while not stop.is_set():
@@ -436,19 +577,22 @@ async def serve(config):
                                 continue
                             event = json.loads(raw)
                             if event.get("post_type") != "message":
-                                try:
-                                    await asyncio.to_thread(handle_platform_event, config, event)
-                                except Exception:
-                                    log.warning("Platform event was not persisted")
+                                async def platform_task(value=event):
+                                    async with event_gate:
+                                        try:
+                                            await asyncio.to_thread(handle_platform_event, config, value)
+                                        except Exception:
+                                            log.warning("Platform event was not persisted")
+                                task = asyncio.create_task(platform_task())
+                                event_tasks.add(task); task.add_done_callback(event_tasks.discard)
                                 continue
                             decision = await asyncio.to_thread(channel.ingest_onebot_event, event)
                             if decision.accepted:
-                                # Corpus durability is independent of the UI projection; no recall here.
-                                await asyncio.to_thread(record, config, decision.envelope.as_dict())
-                                try:
-                                    await asyncio.to_thread(host.request, "/observe", {"envelope": decision.envelope.as_dict()})
-                                except httpx.HTTPError:
-                                    log.warning("Native source projection deferred; durable corpus retained")
+                                envelope = decision.envelope
+                                if envelope is not None:
+                                    # Admission is already durable; all work
+                                    # after it is bounded and cannot stall WS recv.
+                                    schedule_admitted(envelope)
                 except Exception as error:
                     transport_connected = False
                     log.warning("OneBot disconnected (%s); reconnect without history replay", type(error).__name__)
@@ -459,6 +603,12 @@ async def serve(config):
         finally:
             stop.set()
             await ticker
+            await outbox_ticker
+            if event_tasks:
+                await asyncio.gather(*event_tasks, return_exceptions=True)
+            media_cache_pool.shutdown(wait=False, cancel_futures=True)
+            inbound_pool.shutdown(wait=False, cancel_futures=True)
+            outbox_pool.shutdown(wait=False, cancel_futures=True)
             napcat.client.close()
             host.client.close()
 

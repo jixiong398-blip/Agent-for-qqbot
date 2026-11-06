@@ -15,10 +15,14 @@ from urllib.parse import urlsplit
 
 from soyo.platform import assert_private, file_lock, is_link, private_fchmod, protect, sync_directory, load_private_json
 
-NATIVE_OPTIONS = {"max_media_bytes", "chunk_delay_seconds", "reply_part_chars", "max_reply_parts",
+NATIVE_OPTIONS = {"max_media_bytes", "media_cache_max_items", "chunk_delay_seconds", "reply_part_chars", "max_reply_parts",
     "bandori_knowledge_root", "bandori_source_url", "bandori_sitemap_path", "bandori_language", "bandori_article_sections",
     "legacy_memory_db", "legacy_cron_file", "action_turn_timeout_ms", "character_turn_timeout_ms",
-    "cognition_start_seq", "note_quotas", "auto_approve_admin_invites"}
+    "action_work_ttl_ms", "action_question_timeout_ms", "action_question_limit",
+    "cognition_start_seq", "note_quotas", "auto_approve_admin_invites",
+    "cognition_anchor_reset_ms", "memory_surface_budget_chars", "action_instruction_file",
+    "action_agent_preset", "action_workdir", "qq_media_window_seconds",
+    "qq_media_max_images", "qq_recent_message_limit", "qq_scene_session_epochs", "qq_scene_recovery_reasons"}
 
 
 def project_root():
@@ -154,7 +158,7 @@ def trusted_ui_peer(value, host):
 def model(value, *, required=False):
     if not value and not required:
         return {}
-    if not isinstance(value, dict) or set(value) - {"name", "base_url", "api_key", "auth_mode", "api", "context_window", "max_tokens", "reasoning_effort", "reasoning_efforts", "vision"}:
+    if not isinstance(value, dict) or set(value) - {"name", "base_url", "api_key", "auth_mode", "api", "context_window", "max_tokens", "reasoning_effort", "reasoning_efforts", "vision", "compat"}:
         raise ValueError("Unsupported model fields")
     result = copy.deepcopy(value)
     if not required and not any(result.get(key) for key in ("name", "base_url", "api_key")):
@@ -195,6 +199,17 @@ def model(value, *, required=False):
         raise ValueError('Selected reasoning effort is absent from the declared provider mapping')
     if type(result.get("vision", False)) is not bool:
         raise ValueError("Image support must be an explicit boolean")
+    compat = result.get("compat", {})
+    if not isinstance(compat, dict):
+        raise ValueError("Model compat overrides must be an object")
+    if compat:
+        # Field names are validated against pi-ai's declared catalog compat
+        # fields at render time; here only structure and value types are fixed.
+        for field, wire in compat.items():
+            if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9]{0,63}", str(field)):
+                raise ValueError("Invalid compat field name")
+            if wire is not None and not isinstance(wire, (str, bool, int)):
+                raise ValueError("Compat overrides accept string/boolean/integer wire values only")
     return result
 
 
@@ -232,6 +247,8 @@ def validate(config, *, ready=False):
         config["models"]["action"] = copy.deepcopy(config["models"]["character"])
     for key in ("character", "action"):
         config["models"][key] = model(config["models"].get(key), required=ready)
+    if config["models"].get("action_owner"):
+        config["models"]["action_owner"] = model(config["models"]["action_owner"], required=ready)
     if not isinstance(config["models"].get("fallbacks", []), list):
         raise ValueError("Fallback routes must be a list")
     for item in config["models"].get("fallbacks", []):
@@ -318,12 +335,50 @@ def validate(config, *, ready=False):
     options = config.get("native_options", {})
     if not isinstance(options, dict) or set(options) - NATIVE_OPTIONS:
         raise ValueError("Unsupported native_options; runtime identity/keys cannot be overridden")
+    for key in ("qq_scene_session_epochs", "qq_scene_recovery_reasons"):
+        value = options.get(key, {})
+        if not isinstance(value, dict) or len(value) > 1000:
+            raise ValueError("QQ scene epoch metadata must be a bounded object")
+        for route_id, text in value.items():
+            if not re.fullmatch(r"qq-(?:group|private)-[1-9][0-9]{0,19}", str(route_id)):
+                raise ValueError("Invalid QQ scene epoch route")
+            if not isinstance(text, str) or not 1 <= len(text) <= 160 or any(ord(c) < 32 for c in text):
+                raise ValueError("Invalid QQ scene epoch metadata")
+    for key, low, high in (('qq_media_window_seconds', 0, 7 * 24 * 3600),
+                           ('qq_media_max_images', 1, 40),
+                           ('qq_recent_message_limit', 10, 200)):
+        value = options.get(key)
+        if value is not None and (type(value) is not int or not low <= value <= high):
+            raise ValueError(key + ' must be an integer between ' + str(low) + ' and ' + str(high))
+    preset = options.get('action_agent_preset')
+    if preset is not None and (not isinstance(preset, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,39}", preset)):
+        raise ValueError("action_agent_preset must be a bounded preset id")
+    workdir = options.get('action_workdir')
+    if workdir is not None and (not isinstance(workdir, str) or len(workdir) > 4096
+                                or (workdir and not Path(workdir).is_absolute())):
+        raise ValueError("action_workdir must be an absolute path")
+    instruction = options.get('action_instruction_file')
+    if instruction is not None and (not isinstance(instruction, str) or len(instruction) > 4096
+                                    or (instruction and not Path(instruction).is_absolute())):
+        raise ValueError("action_instruction_file must be an absolute path")
     for key in ('bandori_knowledge_root', 'legacy_memory_db', 'legacy_cron_file'):
         if options.get(key) and not Path(options[key]).is_absolute():
             raise ValueError("Native data references must be explicit absolute paths")
+    cache_items = options.get('media_cache_max_items')
+    if cache_items is not None and (type(cache_items) is not int or not 1 <= cache_items <= 1000):
+        raise ValueError("media_cache_max_items must be an integer between 1 and 1000")
+    budget = options.get('memory_surface_budget_chars')
+    if budget is not None and (type(budget) is not int or not 4000 <= budget <= 200000):
+        raise ValueError("memory_surface_budget_chars must be an integer between 4000 and 200000")
+    reset = options.get('cognition_anchor_reset_ms')
+    if reset is not None and (type(reset) is not int or not 60000 <= reset <= 3600000):
+        raise ValueError("cognition_anchor_reset_ms must be an integer between 60000 and 3600000")
     backend = config.get('development', {}).get('backend')
     if backend not in {'disabled', 'docker', 'bubblewrap'} or backend == 'bubblewrap' and os.name == 'nt':
         raise ValueError("Choose disabled/Docker, or bubblewrap on Linux; never unisolated execution")
+    network = config.get('development', {}).get('network')
+    if network is not None and type(network) is not bool:
+        raise ValueError("development.network must be an explicit boolean")
     lines = config.get('agent_line', {}).get('routes', [])
     if not isinstance(lines, list) or len(lines) > 32 or len({row.get('id') for row in lines if isinstance(row, dict)}) != len(lines):
         raise ValueError("Agent Line routes must be a bounded list with unique IDs")

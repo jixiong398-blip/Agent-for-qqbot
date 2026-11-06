@@ -10,8 +10,10 @@ from pathlib import Path
 
 if __package__:
     from .native_tools import read_media
+    from .media_cache import lookup as cached_media
 else:
     from native_tools import read_media
+    from media_cache import lookup as cached_media
 
 
 def transcribe(path: str, config=None) -> dict:
@@ -84,7 +86,10 @@ def main() -> None:
             continue
         try:
             normalized_kind = "image" if kind in {"image", "mface"} else ("record" if kind in {"record", "audio"} else "video")
-            result = read_media(config, {"kind": normalized_kind,
+            # The gateway cached the original bytes on arrival. Read that copy
+            # first; only a cache miss reaches NapCat/the CDN.
+            result = cached_media(config, item.get("ref"))
+            result = {"ok": True, **result} if result else read_media(config, {"kind": normalized_kind,
                                          "ref": item.get("ref"), "op": "media"})
         except Exception as error:
             result = {"ok": False, "error": type(error).__name__}
@@ -92,7 +97,8 @@ def main() -> None:
             if normalized_kind in {"record", "video"}:
                 audio_path = result["path"] if normalized_kind == "record" else video_audio(result["path"], Path(config["media_root"]))
                 result["transcript"] = transcribe(audio_path, config).get("text", "") if audio_path else ""
-            results.append(result)
+            results.append({**result, "ref": item.get("ref"), "metadata": item.get("metadata") or {},
+                            "label": item.get("label") or ""})
             if normalized_kind == "video":
                 for frame in video_frames(result["path"], Path(config["media_root"])):
                     results.append({"ok": True, "kind": "image", "path": frame, "media_type": "image/jpeg",

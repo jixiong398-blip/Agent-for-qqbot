@@ -1,7 +1,7 @@
 # 原生 DSH Host 边界（MIT）
 
-通过项目根目录的统一安装器装配，见 [主说明](../../../../../README.md) 与
-[迁移状态](../../../../../MIGRATION.md)。本轮为已做 Windows/WSL 本地验证的源码候选，尚未发布；范围见 [验证边界](../../../../../VALIDATION.md)。
+通过项目根目录的统一安装器装配，见 [主说明](../../../../README.md) 与
+[迁移状态](../../../../MIGRATION.md)。本轮为已做 Windows/WSL 本地验证的源码候选，尚未发布；范围见 [验证边界](../../../../VALIDATION.md)。
 
 - 固定整套 Asuna DSH fork `0.2.1-rc.2` / `5713aab7963851d1a87482058c33c4af0e1c2ff8`，不只替换 UI 包。
 - `index.mjs` 是独立本机回环入口，保留 DSH Host/Origin/cookie/API/mux admission。
