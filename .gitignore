@@ -52,6 +52,12 @@ hermes/docs/UPDATE_LOG.md
 # Native DSH maintenance handoffs/diagnostics stay in the private receiver.
 /hermes/docs/
 
+# Server-only operators stay on the LAN repo: they assume systemd or a fixed
+# tailnet layout and are never part of the distributed product.
+/hermes/core/scripts/tailscale_loopback_proxy.mjs
+/hermes/core/scripts/qq_gateway_watchdog.py
+/hermes/core/scripts/repair_action_catalog.mjs
+
 # Live2D runtime files
 modules/live2d/live2d_pref.json
 modules/live2d/window_state.json
