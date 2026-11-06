@@ -63,6 +63,18 @@ export class DualBrain {
     await mkdir(this.root, { recursive: true, mode: 0o700 }); await mkdir(this.workspaceRoot, { recursive: true, mode: 0o700 });
     this.workspace = await this.ctx.workspaceRegistry.create(this.workspaceRoot, `${this.config.character_name || 'Bot'} · 行动脑`);
     await this.workspace.setTitle(`${this.config.character_name || 'Bot'} · 行动脑`);
+    // The action brain may run in its own directory (action_workdir). A
+    // workspace can only own sessions whose cwd resolves to its root, so when
+    // the workdir differs from the development root the executor children need
+    // a workspace of their own. Without this, agents.create auto-attaches the
+    // child to the parent workspace and fails on the cwd mismatch, which made
+    // every delegated task die as child_creation_failed.
+    this.actionWorkspace = this.workspace;
+    if (this.actionWorkdir !== this.workspaceRoot) {
+      await mkdir(this.actionWorkdir, { recursive: true, mode: 0o700 });
+      this.actionWorkspace = await this.ctx.workspaceRegistry.create(this.actionWorkdir, `${this.config.character_name || 'Bot'} · 行动脑工作区`);
+      await this.actionWorkspace.setTitle(`${this.config.character_name || 'Bot'} · 行动脑工作区`);
+    }
     for (const workspace of this.ctx.workspaceRegistry.list()) {
       if (workspace.id !== this.workspace.id && workspace.title === 'Soyo · 行动脑')
         await workspace.setTitle(`${this.config.character_name || 'Bot'} · 行动脑（旧候选）`).catch(() => {});
@@ -472,9 +484,10 @@ export class DualBrain {
         setup: setupChild });
       this.handles.set(task.id, handle);
       if (!task.resumed_work) {
-        // The workspace is bound to its own root; an action child running in
-        // another directory cannot be attached without a workspace of its own.
-        if (this.actionWorkdir === this.workspaceRoot) await this.workspace.attachSession(handle.agent.id);
+        // Attach the child to the workspace that owns its cwd: the action
+        // workdir's own workspace when configured, otherwise the development
+        // workspace. Attaching to the wrong root throws on the cwd mismatch.
+        await this.actionWorkspace.attachSession(handle.agent.id);
         handle.agent.session.append('session/title', { title: '行动脑 · ' + objective.slice(0, 50), source: { kind: 'user' }, messageSeqs: [] });
       }
       const descriptor = snapshotSubagentDescriptor({ mode: 'one-shot', provider: 'soyo-action-brain', label: objective.slice(0, 80) });

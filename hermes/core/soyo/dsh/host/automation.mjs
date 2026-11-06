@@ -243,7 +243,12 @@ export async function apply(ctx, settings) {
         try { await privateJSON(join(runsRoot, work.id + '.json')); continue; } catch (error) { if (error.code !== 'ENOENT') throw error; }
         // DSH emits latest-missed reminders after restart. A prior occurrence
         // is kept as evidence but never becomes a new model/effect obligation.
-        if (Date.parse(work.occurrence_at) < startedAt || Date.now() - Date.parse(work.occurrence_at) > 90000) {
+        // Bound catch-up by the boot boundary alone: DSH delivers the newest
+        // due occurrence on its own scan cadence, and that scan can legitimately
+        // lag wall-clock by minutes while it drains a backlog. A fixed 90s
+        // window therefore discarded every recurring delivery and stopped all
+        // automation; the run-id dedupe below already prevents double work.
+        if (Date.parse(work.occurrence_at) < startedAt) {
           work.state = 'skipped'; work.reason = 'no_catchup'; await saveRun(work); continue;
         }
         await saveRun(work);

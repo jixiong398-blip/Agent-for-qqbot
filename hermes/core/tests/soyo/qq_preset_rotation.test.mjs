@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT
 // Upgrading an existing deployment must not brick QQ: a session that predates
 // the Agent preset is rotated once, deterministically, and the old log is kept.
 // The module under test is copied into a scratch tree with stub DSH packages,

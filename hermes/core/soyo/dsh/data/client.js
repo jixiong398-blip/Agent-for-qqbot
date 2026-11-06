@@ -39,8 +39,8 @@ window.__ModuleLoader__.load({ id: '@soyo/dsh-data', factory: require => {
           return () => { live = false; clearTimeout(timer); };
         }, [visible, scene, category, offset, search, refresh]);
         const change = setter => value => { setter(value); setOffset(0); };
-        return h('section', { 'aria-label': 'Soyo 记忆与数据', style: paneStyle },
-          h('h3', null, 'Soyo · 记忆与数据'),
+        return h('section', { 'aria-label': 'Bot 记忆与数据', style: paneStyle },
+          h('h3', null, 'Bot · 记忆与数据'),
           h('p', null, '只读查看，不调用模型。QQ群只在明确 @ 后推理，未 @ 原话仍保留。'),
           select('会话', scene, (catalog?.scenes ?? []).map(row => [row.session_id, (row.message_type === 'group' ? '群聊 · ' : '私聊 · ') + row.name]), change(setScene)),
           select('数据类型', category, Object.entries(kinds), change(setCategory)),
@@ -86,9 +86,9 @@ window.__ModuleLoader__.load({ id: '@soyo/dsh-data', factory: require => {
           refresh(); const timer = setInterval(refresh, 3000);
           return () => { live = false; clearInterval(timer); };
         }, [visible, props.sessionId, all]);
-        return h('section', { 'aria-label': 'Soyo 双脑区', style: paneStyle },
-          h('h3', null, 'Soyo · 双脑区'),
-          h('p', null, '角色脑：Soyo · 行动脑：独立原生子会话 · GPT：辅助脑。查看不会调用模型。'),
+        return h('section', { 'aria-label': 'Bot 双脑区', style: paneStyle },
+          h('h3', null, 'Bot · 双脑区'),
+          h('p', null, '角色脑：Bot · 行动脑：独立原生子会话 · GPT：辅助脑。查看不会调用模型。'),
           h('label', null, h('input', { type: 'checkbox', checked: all, onChange: event => setAll(event.target.checked) }), '全部行动任务（含其他父会话）'),
           error && h('p', { role: 'alert' }, error),
           value && !value.tasks.length && h('p', null, '当前范围没有行动任务；可切换到全部。'),
@@ -121,7 +121,7 @@ window.__ModuleLoader__.load({ id: '@soyo/dsh-data', factory: require => {
         }, [wide, authorUi]);
         if (authorUi) return null; // Author header/tabs own primary navigation now.
         if (!wide) return null;
-        return h('section', { 'aria-label': 'Soyo 行动会话入口', style: { width: '100%', padding: '6px 4px', boxSizing: 'border-box' } },
+        return h('section', { 'aria-label': 'Bot 行动会话入口', style: { width: '100%', padding: '6px 4px', boxSizing: 'border-box' } },
           h('div', { style: { display: 'flex', gap: 8, marginBottom: 6 } },
             h('button', { onClick: () => ctx.sidebarRight.openTab('soyo-brains') }, '双脑区'),
             h('button', { onClick: () => ctx.sidebarRight.openTab('soyo-notes') }, '跨会话便签')),
@@ -156,9 +156,9 @@ window.__ModuleLoader__.load({ id: '@soyo/dsh-data', factory: require => {
             .catch(error => { if (live) setError(error.message); });
           return () => { live = false; };
         }, [visible, place, offset, refresh]);
-        return h('section', { 'aria-label': 'Soyo 跨会话便签', style: paneStyle },
-          h('h3', null, 'Soyo · 跨会话便签'),
-          h('p', null, '是 Soyo 写给别的会话里的自己的话，不是平台消息。next_time 不主动唤醒；QQ群等下次明确 @。'),
+        return h('section', { 'aria-label': 'Bot 跨会话便签', style: paneStyle },
+          h('h3', null, 'Bot · 跨会话便签'),
+          h('p', null, '是 Bot 写给别的会话里的自己的话，不是平台消息。next_time 不主动唤醒；QQ群等下次明确 @。'),
           select('便签会话', place, places.map(row => [row.place, row.name]), value => { setPlace(value); setOffset(0); }),
           h('button', { onClick: () => setRefresh(value => value + 1) }, '刷新便签'),
           error && h('p', { role: 'alert' }, error),

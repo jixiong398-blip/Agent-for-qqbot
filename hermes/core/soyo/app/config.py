@@ -292,8 +292,10 @@ def validate(config, *, ready=False):
         endpoint(qq.get("ws_url"), {"ws"}, loopback=True)
         if not qq.get("token"):
             raise ValueError("NapCat access token is required")
-    if ready and not config.get("character_name", "").strip():
-        raise ValueError("Character name must be configured")
+    if ready:
+        name = config.get("character_name", "").strip()
+        if not name:
+            raise ValueError("Character name must be configured")
     for field in ("admin_ids", "allowed_users", "blocked_users", "owner_group_ids"):
         rows = qq.get(field, [])
         if not isinstance(rows, list) or any(not re.fullmatch(r"[1-9][0-9]{0,19}", str(x)) for x in rows):

@@ -41,7 +41,7 @@ def render(home, config, runtime):
     standard["plugins"][0] = {"id": "persona", "name": "@soyo/dsh-host-boundary/persona", "config": {
         "soulFile": str(home / "persona/SOUL.md"), "behaviorFile": str(home / "persona/BEHAVIOR.md")}}
     qq_preset = {"id": "soyo-qq-compaction", "order": 2,
-        "name": "Soyo QQ bounded compaction",
+        "name": "Bot QQ bounded compaction",
         "description": "QQ-only compaction services; no Web coding or delegation tools.",
         "plugins": [{"id": "compaction", "name": "cordis:group", "group": True,
             "isolate": {"compaction": True, "toolResultPruner": True}, "config": [
@@ -60,7 +60,7 @@ def render(home, config, runtime):
     if absent:
         raise ValueError("Installed DSH standard preset is missing services for the action brain: " + ", ".join(absent))
     action_preset = {"id": "soyo-action-full", "order": 3,
-        "name": "Soyo action executor",
+        "name": "Bot action executor",
         "description": "Owner-authorized action brain: instructions, web, todos, subagents, compaction.",
         "plugins": [standard_plugins[name] for name in required_action_plugins]
                    + [qq_preset["plugins"][0]]}
@@ -126,7 +126,8 @@ def render(home, config, runtime):
         "knowledge_shared": config["knowledge"].get("shared", False), "speech": config.get("speech", {}),
         "briefing_fonts": config.get("briefing_fonts", {}), "cognition_enabled": config.get("features", {}).get("cognition", True),
         "automation_jobs": config.get("automation_jobs", []), "time_zone": config.get("time_zone") or "UTC",
-        "character_name": config["character_name"], "direct_root": False, "operator_ui_enabled": config.get("features", {}).get("operator_ui", True),
+        "character_name": config["character_name"],
+        "direct_root": False, "operator_ui_enabled": config.get("features", {}).get("operator_ui", True),
         "lifecycle": {"mode": "supervisor"}, "catchup_enabled": False, "brain_mode": "character-action",
         "owner_sessions": [config["profile"] + "-owner"], "owner_session_id": config["profile"] + "-owner",
         "agent_options": routes["character"], "action_agent_options": routes["action"],
@@ -198,6 +199,7 @@ def render(home, config, runtime):
             *[{"id": name, "name": "@soyo/dsh-host-boundary/" + module, "config": {"configFile": str(config_file)}}
                 for name, module in (("soyo-qq-native", "qq-native"), ("soyo-automation", "automation"), ("soyo-agent-line", "agent-line"), ("soyo-peer", "peer"))
                 if module not in {"automation", "agent-line"} or qq.get("enabled", False)],
+            {"id": "soyo-identity-anchor", "name": "@soyo/dsh-host-boundary/identity-anchor", "config": {"configFile": str(config_file)}},
             {"id": "soyo-asuna-ui", "name": "@soyo/dsh-asuna-ui", "config": {"routes": {"character": routes["character"], "action": routes["action"]}}},
             {"id": "soyo-dashboard", "name": "@soyo/dsh-dashboard", "config": {
                 "apiURL": f'http://{config["management_host"]}:{config["management_port"]}', "publicURL": f'http://{config["management_host"]}:{config["management_port"]}',

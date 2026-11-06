@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT
 // Real installed Session and V4 codec cold-restore gate. No models or QQ, no mocks of the critical boundary.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';

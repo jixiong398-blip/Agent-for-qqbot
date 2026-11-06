@@ -11,6 +11,7 @@
     "./automation": "./automation.mjs",
     "./agent-line": "./agent-line.mjs",
     "./peer": "./peer.mjs",
+    "./identity-anchor": "./identity-anchor.mjs",
     "./model-fallback": "./model-fallback.mjs",
     "./platform": "./platform.mjs",
     "./package.json": "./package.json"
