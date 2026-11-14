@@ -159,6 +159,16 @@ async function jobs() {
   return Promise.all((await readdir(join(config.native_root, 'jobs'))).filter(n => /^[a-f0-9]{64}\.json$/.test(n))
     .map(async n => JSON.parse(await readFile(join(config.native_root, 'jobs', n), 'utf8'))));
 }
+async function outboxWithCount(expected) {
+  // A completed JSON file becomes visible at rename, before directory fsync
+  // and the in-memory ready index settle. Observe the actual outbox contract,
+  // not that narrower filesystem window, without weakening the exact count.
+  return until(async () => {
+    const items = (await request('/outbox')).items;
+    assert(items.length <= expected, 'unexpected duplicate or extra publication');
+    return items.length === expected ? items : null;
+  });
+}
 async function submit(marker, expectedState = 'complete', extra = {}) {
   const accepted = await request('/inbound', { envelope: { account_id: config.account_id, route_id: 'qq-private-100001',
     target_id: '100001', sender_id: '100001', message_type: 'private', event_id: marker,
@@ -184,7 +194,7 @@ try {
   await request('/routes', { routes: [{ route_id: 'qq-private-100001', target_id: '100001', message_type: 'private', name: 'Synthetic owner' }] });
   const ordinary = await submit('FIXTURE_NORMAL');
   assert.equal(ordinary.publication.text, normalFinal, 'Do not filter normal final text by thought-like keywords');
-  assert.equal((await request('/outbox')).items.length, 2, 'normal speech before tools is a separate publication');
+   assert.equal((await outboxWithCount(2)).length, 2, 'normal speech before tools is a separate publication');
   const separated = await submit('FIXTURE_REASONING');
   assert.equal(separated.publication.text, 'FIXTURE_REASONING_FINAL');
   const toolError = await submit('FIXTURE_TOOL_ERROR', 'suppressed');
@@ -193,7 +203,7 @@ try {
   const noFinal = await submit('FIXTURE_NO_FINAL', 'suppressed');
   assert.equal(noFinal.reason, 'max-tokens');
   assert(!noFinal.publication, 'Never fall back to a previous assistant text when no final exists');
-  assert.equal((await request('/outbox')).items.length, 6, 'completed earlier speech stays valid even when later work fails');
+   assert.equal((await outboxWithCount(6)).length, 6, 'completed earlier speech stays valid even when later work fails');
   assert(events.some(e => e.type === 'tool/result' && e.data.message.isError), 'The tool error must actually execute');
   const stage = await submit('FIXTURE_DELEGATE');
   assert.equal(stage.publication.text, 'FIXTURE_STAGE_FINAL');
@@ -202,7 +212,7 @@ try {
   releaseAction();
   const followup = await until(async () => (await jobs()).find(row => row.origin_job_key === stage.key && row.internal_source === 'action-report' && row.state === 'complete'));
   assert.equal(followup.publication.text, 'FIXTURE_RESULT_FINAL');
-  const all = await jobs(), outbox = (await request('/outbox')).items;
+   const all = await jobs(), outbox = await outboxWithCount(11);
   assert.equal(all.filter(j => j.internal_source === 'role-progress').length, 0, 'do not revive the old untyped progress path');
   assert.equal(outbox.length, 11);
   assert.equal(new Set(outbox.map(p => p.publication_id)).size, 11);

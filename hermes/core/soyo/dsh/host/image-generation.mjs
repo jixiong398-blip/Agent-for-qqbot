@@ -28,6 +28,7 @@ const MAX_TIMEOUT_MS = 600000;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_REFERENCE_IMAGES = 4;
 const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
+const MAX_MASK_BYTES = 20 * 1024 * 1024;
 const DEFAULT_SIZE = '1024x1024';
 
 /** Browser-shaped headers; the Cloudflare front rejects a bare JSON client. */
@@ -69,16 +70,16 @@ export function imageRequest({ config, prompt, size }) {
  * body on `/images/edits` is rejected with `images[].image_url is required`.
  * So drawing with reference images must migrate to multipart here.
  */
-export function imageEditRequest({ config, prompt, size, images }) {
+export function imageEditRequest({ config, prompt, size, images, mask = null }) {
   const origin = originOf(config.base_url);
   return { url: config.base_url.replace(/\/+$/, '') + '/images/edits',
     headers: { ...IMAGE_BROWSER_HEADERS, ...(origin ? { Origin: origin, Referer: origin + '/' } : {}) },
     fields: { model: config.model, prompt, n: 1, size: size || config.size || DEFAULT_SIZE },
-    images };
+    images, mask };
 }
 
 /** Build a multipart body with real binary image parts; no base64 inflation. */
-function multipartBody({ fields, images }) {
+function multipartBody({ fields, images, mask = null }) {
   const boundary = '----soyo' + randomUUID().replace(/-/g, '');
   const chunks = [];
   const push = text => chunks.push(Buffer.from(text, 'utf8'));
@@ -94,8 +95,24 @@ function multipartBody({ fields, images }) {
     chunks.push(image.bytes);
     push('\r\n');
   }
+  if (mask) {
+    push('--' + boundary + '\r\n');
+    push('Content-Disposition: form-data; name="mask"; filename="' + mask.name + '"\r\n');
+    push('Content-Type: ' + mask.mediaType + '\r\n\r\n');
+    chunks.push(mask.bytes);
+    push('\r\n');
+  }
   push('--' + boundary + '--\r\n');
   return { body: Buffer.concat(chunks), contentType: 'multipart/form-data; boundary=' + boundary };
+}
+
+/** Parts are internal binary values, not paths or trusted multipart headers. */
+function validImagePart(part) {
+  if (!part || !Buffer.isBuffer(part.bytes) || !part.bytes.length ||
+      typeof part.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(part.name) ||
+      typeof part.mediaType !== 'string') return false;
+  const kind = imageType(part.bytes);
+  return !!kind && part.mediaType === kind.type;
 }
 
 /** Logging is diagnostics only: it must never turn a clear failure into a crash. */
@@ -180,7 +197,7 @@ export async function loadReferenceImages({ paths, mediaRoot, extraRoots = [], m
  * character's own attach tool can send it. Returns an explicit state; a
  * provider text answer is `refused`, never a fake success.
  */
-export async function generateImage({ config, prompt, size, referenceImages = [], mediaRoot, signal, logger = console }) {
+export async function generateImage({ config, prompt, size, referenceImages = [], mask = null, mediaRoot, signal, logger = console }) {
   const drawing = imageGenerationConfig(config);
   if (!drawing) return { state: 'failed', code: 'IMAGE_GEN_UNCONFIGURED',
     message: 'IMAGE_GEN_UNCONFIGURED: 还没有配置画图用的独立凭据（image_gen），不能画图' };
@@ -193,6 +210,18 @@ export async function generateImage({ config, prompt, size, referenceImages = []
   if (references.length > MAX_REFERENCE_IMAGES)
     return { state: 'failed', code: 'IMAGE_GEN_REFERENCE',
       message: 'IMAGE_GEN_REFERENCE: 参考图最多 ' + MAX_REFERENCE_IMAGES + ' 张' };
+  if (references.some(part => !validImagePart(part) || part.bytes.length > MAX_REFERENCE_BYTES))
+    return { state: 'failed', code: 'IMAGE_GEN_REFERENCE',
+      message: 'IMAGE_GEN_REFERENCE: 参考图必须是大小受限、文件名安全且媒体类型匹配的二进制图片' };
+  if (mask !== null && !validImagePart(mask))
+    return { state: 'failed', code: 'IMAGE_GEN_MASK',
+      message: 'IMAGE_GEN_MASK: 遮罩必须是文件名安全且媒体类型匹配的二进制图片部件' };
+  if (mask !== null && mask.bytes.length > MAX_MASK_BYTES)
+    return { state: 'failed', code: 'IMAGE_GEN_MASK_SIZE',
+      message: 'IMAGE_GEN_MASK_SIZE: 遮罩超过 ' + MAX_MASK_BYTES + ' 字节上限' };
+  if (mask !== null && !references.length)
+    return { state: 'failed', code: 'IMAGE_GEN_MASK',
+      message: 'IMAGE_GEN_MASK: 遮罩编辑至少需要一张原图参考' };
   const media = await realpath(mediaRoot);
   let key, keyFile;
   try {
@@ -210,8 +239,8 @@ export async function generateImage({ config, prompt, size, referenceImages = []
   const startedAt = Date.now();
   try {
     if (references.length) {
-      const edit = imageEditRequest({ config: drawing, prompt, size: requested, images: references });
-      const encoded = multipartBody({ fields: edit.fields, images: references });
+      const edit = imageEditRequest({ config: drawing, prompt, size: requested, images: references, mask });
+      const encoded = multipartBody({ fields: edit.fields, images: references, mask: edit.mask });
       response = await fetch(edit.url, { method: 'POST', signal: combined,
         headers: { ...edit.headers, Authorization: 'Bearer ' + key, 'Content-Type': encoded.contentType },
         body: encoded.body });

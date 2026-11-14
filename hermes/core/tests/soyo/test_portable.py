@@ -51,3 +51,46 @@ def test_source_package_keeps_local_imports_of_shipped_javascript_tests(monkeypa
             if not target.is_file() or not module.allowed(relative):
                 missing.append((name, relative))
     assert not missing, f'Shipped tests have missing source package dependencies: {missing}'
+
+
+def test_prebuilt_keeps_napcat_original_license_and_reviewed_source_notices(tmp_path, monkeypatch):
+    import importlib.util
+    root = Path(__file__).resolve().parents[4]
+    monkeypatch.syspath_prepend(str(root/'extras/scripts'))
+    spec = importlib.util.spec_from_file_location('portable_notices_fixture', root/'extras/scripts/build_portable.py')
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    name = 'third_party/NAPCAT-LICENSE.txt'
+    assert module.allowed(name)
+    assert (root/name).read_text(encoding='utf-8').startswith('Limited Redistribution License for NapCat\n')
+    source = tmp_path/'inputs'; source.mkdir()
+    (source/'sources').mkdir()
+    (source/'sources/exact-source.tar.gz').write_bytes(b'fixture source archive')
+    destination = tmp_path/'licenses'; destination.mkdir()
+    module.copy_additional_notices(source, destination)
+    assert (destination/'sources/exact-source.tar.gz').read_bytes() == b'fixture source archive'
+    with pytest.raises(ValueError, match='replace an original'):
+        module.copy_additional_notices(source, destination)
+
+
+def test_prebuilt_refuses_runtime_caches_as_additional_notices(tmp_path, monkeypatch):
+    import importlib.util
+    root = Path(__file__).resolve().parents[4]
+    monkeypatch.syspath_prepend(str(root/'extras/scripts'))
+    spec = importlib.util.spec_from_file_location('portable_bad_notices_fixture', root/'extras/scripts/build_portable.py')
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    source = tmp_path/'inputs'; source.mkdir()
+    (source/'private.pyc').write_bytes(b'not a notice')
+    with pytest.raises(ValueError, match='not a source notice'):
+        module.copy_additional_notices(source, tmp_path/'licenses')
+
+
+def test_posix_entrypoints_keep_lf_in_source_and_both_packagers():
+    root = Path(__file__).resolve().parents[4]
+    for name in ['install.sh', 'start.sh', 'configure.sh', 'stop.sh', 'update.sh']:
+        data = (root/name).read_bytes()
+        assert data.startswith(b'#!/usr/bin/env sh\n'), name
+        assert b'\r' not in data, name
+    assert '*.sh text eol=lf' in (root/'.gitattributes').read_text(encoding='utf-8')
+    for name in ['package_source.py', 'build_portable.py']:
+        source = (root/'extras/scripts'/name).read_text(encoding='utf-8')
+        assert "replace(b'\\r\\n', b'\\n')" in source, name

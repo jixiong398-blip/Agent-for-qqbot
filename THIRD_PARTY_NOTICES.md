@@ -26,9 +26,11 @@ Live2D 的 Electron、PIXI/Cubism 与可选模型素材、NapCat/QQ 等继续适
 不能用根级 MIT 标签覆盖 GPL 组件，也不能据此宣布整个历史项目重新许可。
 公开打包前还需确认组合分发、对应源码、生成产物和依赖兼容义务。
 
-## 1.1.3 候选的额外边界
+## 1.1.3 的分发材料与边界
 
 - NapCat 历史源码归档仅作为来源保全，pin 见 `third_party/napcat-source.json`；独立维护源码不随 Bot 公开源码候选分发，也不由本版本编译或更换。
 - 已核对的 NapCat 原许可标题为 **Limited Redistribution License for NapCat**，含非商用、来源/版权/完整许可保留和修改源码不得公开等条款；这些条款及 QQ 组件各自权利尚未完成组合分发审查。源码归档存在、摘要正确或自用授权均不是公开分发许可。
 - 源码白名单不包含旧 `modules/napcat/` 运行文件、独立维护仓、登录数据和模型素材；GitHub 源码提交也必须排除这些文件，不能只依赖预构建脚本的白名单。
 - GPL 组件的修改源码及构建/安装材料应与相应二进制版本一起提供并满足各自义务；固定 DSH 源码 tar 或一份 MIT 通知不能替代全部依赖的对应源码审查。
+- NapCat 原始完整许可另存于 `third_party/NAPCAT-LICENSE.txt`，预构建包在 `licenses/NAPCAT-LICENSE` 保留副本；来源与版权不由 Bot 的 MIT 覆盖。
+- 预构建包保留各依赖原始许可、固定 DSH 源码归档及 `licenses/SOURCE-AVAILABILITY.json`。可选 Claude Agent SDK 保留原始 `LICENSE.md` / `README.md`，适用其自身条款，不改标为 MIT。

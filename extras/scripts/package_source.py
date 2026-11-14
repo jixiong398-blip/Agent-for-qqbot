@@ -20,7 +20,7 @@ SCRIPT_FILES = {'bootstrap.py', 'bootstrap.ps1', 'portable_launcher.py', 'build_
 
 def allowed(name):
     p = Path(name)
-    if name in ROOT_FILES or name in COMPAT_DOCS or name in {'hermes/.gitattributes', 'hermes/core/LICENSE', 'hermes/core/README.md', 'hermes/core/pyproject.toml', 'third_party/README.md', 'third_party/napcat-source.json'}: return True
+    if name in ROOT_FILES or name in COMPAT_DOCS or name in {'hermes/.gitattributes', 'hermes/core/LICENSE', 'hermes/core/README.md', 'hermes/core/pyproject.toml', 'third_party/README.md', 'third_party/napcat-source.json', 'third_party/NAPCAT-LICENSE.txt'}: return True
     if name.startswith('templates/'): return p.name in {'deployment.example.json', 'deployment.local.example.json', 'SOUL-template.md', 'README.md', 'BEHAVIOR-template.md', '.env.template', 'config-template.yaml'}
     if name.startswith('hermes/templates/'): return p.name in {'SOUL-template.md', 'CORTEX.md', 'CEREBELLUM.md', '.env.template', 'config-template.yaml'}
     if name.startswith('extras/scripts/'): return p.name in SCRIPT_FILES
@@ -57,6 +57,7 @@ def main():
         if file.is_symlink() or getattr(file, 'is_junction', lambda:False)(): raise SystemExit('Linked package input rejected: '+name)
         if any(part.startswith('_') and part not in {'__init__.py','__main__.py'} for part in Path(name).parts): continue
         data=file.read_bytes()
+        if file.suffix == '.sh': data=data.replace(b'\r\n', b'\n')
         if re.search(rb'\bsk-[A-Za-z0-9_-]{20,}', data): raise SystemExit('Credential-shaped source content requires review: '+name)
         payloads[name]=data
     required = {'application.toml','hermes/core/soyo/app/__main__.py','hermes/core/soyo/dsh/host/package.json','hermes/core/soyo/dsh/asuna-ui/vendor/source.json'}

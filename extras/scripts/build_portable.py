@@ -32,6 +32,25 @@ def checked_archive(path, expected):
     if sha(path) != expected: raise ValueError('Build asset hash differs from the reviewed product pin')
 
 
+def copy_additional_notices(source, destination):
+    """Explicit reviewed source/notices input; never follow a builder link."""
+    source = Path(source)
+    if not source.is_dir() or is_link(source):
+        raise ValueError('Use a real reviewed notices directory')
+    paths = sorted(source.rglob('*'))
+    if any(is_link(path) for path in paths):
+        raise ValueError('Linked source/notice inputs rejected')
+    for path in paths:
+        if not path.is_file(): continue
+        relative = path.relative_to(source)
+        if any(part in {'.git', '__pycache__'} for part in relative.parts) or path.suffix == '.pyc':
+            raise ValueError('Build/runtime data is not a source notice')
+        target = destination / relative
+        if target.exists(): raise ValueError('Additional notices must not replace an original notice')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+
+
 def normalize_build_regions(data):
     """Only generated region-comment prefixes; never rewrite code, CSS, maps or notices."""
     return re.sub(rb'(?m)^([ \t]*//#region [^\r\n]*?)(?:(?<![A-Za-z0-9_-])[A-Za-z]:[\\/]|/(?:home|mnt|Users)/)[^\r\n]*?[\\/]upstream[\\/]',
@@ -124,6 +143,7 @@ def main():
     parser.add_argument('--python-archive', type=Path, required=True)
     parser.add_argument('--napcat-archive', type=Path, required=True)
     parser.add_argument('--node-license', type=Path, help='Original matching Node LICENSE when the system install omits it')
+    parser.add_argument('--additional-notices', type=Path, help='Reviewed extra licence texts and exact-version source archives')
     parser.add_argument('--output', type=Path, required=True, help='New private artifact directory outside the checkout')
     parser.add_argument('--acknowledge-unverified', action='store_true')
     args = parser.parse_args()
@@ -147,6 +167,7 @@ def main():
         name = raw.decode().replace('\\', '/'); source = ROOT / name
         if not allowed(name) or not source.is_file() or is_link(source): continue
         target = bundle / name; target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(source, target)
+        if target.suffix == '.sh': target.write_bytes(target.read_bytes().replace(b'\r\n', b'\n'))
     runtime = bundle / 'runtime/dsh'
     shutil.copytree(ROOT / 'hermes/core/soyo', runtime / 'worker/soyo', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     modules = Path(original['modules']).resolve(strict=True)
@@ -193,7 +214,9 @@ def main():
     node_license = args.node_license or next((path for path in (Path(selected['node']).parent / 'LICENSE', Path(selected['node']).parent.parent / 'LICENSE') if path.is_file()), None)
     if node_license is None: raise ValueError('Original Node licence required for a prebuilt candidate')
     shutil.copy2(node_license, notices / 'NODE-LICENSE')
+    shutil.copy2(ROOT / 'third_party/NAPCAT-LICENSE.txt', notices / 'NAPCAT-LICENSE')
     shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', notices / 'THIRD_PARTY_NOTICES.md')
+    if args.additional_notices: copy_additional_notices(args.additional_notices, notices)
     (notices / 'PREBUILT-SOURCES.json').write_text(json.dumps({
         'python': meta['portable']['python'], 'napcat': meta['napcat'], 'dsh': meta['runtime']['inline_repository'],
         'dsh_commit': original['upstream_commit'], 'licence_review_complete': False,

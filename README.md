@@ -2,7 +2,7 @@
 
 原生 DSH + NapCat 的 QQ Bot：角色脑 / 行动脑协作、场景记忆、原生 Web 与真实发送回执。
 
-> **1.1.3 发布候选，尚未发布。** 已发布版本为 1.1.2；请从仓库 Releases 选择对应版本，不要把候选源码当成已发布的预构建包。
+> **1.1.3**：从 [Releases](https://github.com/jixiong398-blip/Agent-for-qqbot/releases/tag/v1.1.3) 下载 Windows / Linux x64 预构建包与 SHA-256 校验文件。
 > 当前为原生 DSH 主线；旧 Hermes / 0.x 停更，历史 tag 保留。
 > 测试、真实模型/QQ 验收和第三方二进制分发许可是不同门槛，见 [VALIDATION.md](VALIDATION.md)。
 
@@ -33,11 +33,11 @@
 4. 按窗口提示重启**本实例** NapCat，填写 Owner QQ，勾选 **显式启用 QQ 接入**，保存并应用。
 5. 查看新鲜连接状态。未登录、账号不符、Token 错误或通道未就绪，不会冒充连接成功；DSH 配置页仍可打开。
 
-预构建候选固定 NapCat **4.18.38**，来源与 SHA-256 在 `application.toml`。
+预构建包固定 NapCat **4.18.38**，来源与 SHA-256 在 `application.toml`，原始许可见 `third_party/NAPCAT-LICENSE.txt`。
 不打包作者的 QQ 登录、数据库、缓存或账号配置；不自动关闭普通 QQ。
 Linux QQ 宿主 / 图形依赖仍须符合 NapCat 官方要求；包含 Shell 组件不等于所有发行版的 QQ 接入已验收。
 
-**1.1.3 候选审查不启动真实 QQ/NapCat，不调用付费模型或绘图；离线回归不等于真实 QQ 验收。**
+**1.1.3 发布验证不启动真实 QQ/NapCat，不调用付费模型或绘图；离线回归与 Web 冷装不等于真实 QQ 验收。**
 
 ## 可选绘图与旧图片召回
 

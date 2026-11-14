@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# POSIX entrypoint: keep LF line endings on every build platform.
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export PYTHONUTF8=1 PYTHONIOENCODING=utf-8

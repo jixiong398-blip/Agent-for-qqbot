@@ -2,3 +2,4 @@
 hermes/core/soyo/dsh/asuna-ui/vendor/cognition-core-client.js -text
 hermes/core/soyo/dsh/asuna-ui/client.js text eol=lf
 hermes/core/soyo/dsh/asuna-ui/adapter.js text eol=lf
+*.sh text eol=lf

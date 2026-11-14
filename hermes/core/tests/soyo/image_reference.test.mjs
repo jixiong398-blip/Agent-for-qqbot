@@ -85,6 +85,78 @@ test('reference images are uploaded to /images/edits as real multipart parts', a
   } finally { await close(); }
 });
 
+test('a masked edit uploads the mask as a separate multipart part', async () => {
+  const { media, refPath, drawing } = await world();
+  const { base, requests, close } = await stub((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ b64_json: PNG.toString('base64') }] }));
+  });
+  try {
+    const loaded = await loadReferenceImages({ paths: [refPath], mediaRoot: media });
+    const result = await generateImage({ config: { image_gen: drawing(base) }, prompt: 'edit only the masked area',
+      referenceImages: loaded.images,
+      mask: { name: 'head-only-mask.png', mediaType: 'image/png', bytes: PNG },
+      mediaRoot: media, logger: {} });
+    assert.equal(result.state, 'created', JSON.stringify(result));
+    assert.equal(requests.length, 1, 'one edit, no extra generation or retry');
+    const sent = requests[0];
+    assert.equal(sent.url, '/images/edits');
+    const body = sent.body.toString('latin1');
+    assert.match(body, /name="image"; filename="reference-1\.png"/);
+    assert.match(body, /name="mask"; filename="head-only-mask\.png"/);
+    assert.equal((body.match(/Content-Disposition: form-data; name="mask"/g) || []).length, 1);
+    assert.equal((body.match(/Content-Type: image\/png/g) || []).length, 2);
+    assert(sent.body.includes(PNG), 'the mask part must carry the supplied image bytes');
+  } finally { await close(); }
+});
+
+test('invalid masks and reference parts fail before credentials or network access', async () => {
+  const { media, drawing } = await world();
+  const { base, requests, close } = await stub((_req, res) => {
+    res.writeHead(500); res.end('must not be reached');
+  });
+  try {
+    // A missing key and media directory prove validation runs before either read.
+    const config = { image_gen: { ...drawing(base), key_file: join(media, 'absent-key') } };
+    const part = { name: 'mask.png', mediaType: 'image/png', bytes: PNG };
+    const options = { config, prompt: 'edit', referenceImages: [part], mediaRoot: join(media, 'absent'), logger: {} };
+    const invalid = [false, {}, { ...part, bytes: Buffer.alloc(0) }, { ...part, bytes: PNG.toString('base64') },
+      { ...part, bytes: Buffer.from('not an image') }, { ...part, name: '' },
+      { ...part, name: 'mask.png"\r\nX-Injected: yes' }, { ...part, name: '../mask.png' },
+      { ...part, name: 'a'.repeat(201) }, { ...part, mediaType: 'image/png\r\nX-Injected: yes' },
+      { ...part, mediaType: 'image/jpeg' }];
+    for (const mask of invalid) {
+      const result = await generateImage({ ...options, mask });
+      assert.equal(result.code, 'IMAGE_GEN_MASK', JSON.stringify(result));
+    }
+    const huge = Buffer.alloc(20 * 1024 * 1024 + 1); PNG.copy(huge);
+    assert.equal((await generateImage({ ...options, mask: { ...part, bytes: huge } })).code, 'IMAGE_GEN_MASK_SIZE');
+    assert.equal((await generateImage({ ...options, mask: part, referenceImages: [] })).code, 'IMAGE_GEN_MASK');
+    for (const reference of [invalid[2], invalid[6], invalid[9], { ...part, bytes: huge }]) {
+      assert.equal((await generateImage({ ...options, referenceImages: [reference] })).code, 'IMAGE_GEN_REFERENCE');
+    }
+    assert.equal(requests.length, 0);
+  } finally { await close(); }
+});
+
+test('a failed masked edit is not retried and provider details stay redacted', async () => {
+  const { media, drawing } = await world();
+  const { base, requests, close } = await stub((_req, res) => {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'Bearer sk-fixture-drawing-key https://provider.invalid/private' } }));
+  });
+  try {
+    const part = { name: 'mask.png', mediaType: 'image/png', bytes: PNG };
+    const result = await generateImage({ config: { image_gen: drawing(base) }, prompt: 'edit',
+      referenceImages: [part], mask: part, mediaRoot: media, logger: {} });
+    assert.equal(result.state, 'failed');
+    assert.equal(result.code, 'IMAGE_GEN_HTTP');
+    assert.equal(requests.length, 1);
+    assert.doesNotMatch(JSON.stringify(result), /sk-fixture-drawing-key|provider\.invalid/);
+    assert.deepEqual(await readdir(media), ['reference.png']);
+  } finally { await close(); }
+});
+
 test('no reference images keeps the plain generations endpoint', async () => {
   const { media, drawing } = await world();
   const { base, requests, close } = await stub((_req, res) => {

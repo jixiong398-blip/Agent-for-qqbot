@@ -1,6 +1,6 @@
 # Agent-for-qqbot — 原生 DSH 源码
 
-当前是 1.1.3 原生 DSH QQ Agent 发布候选，尚未发布；已发布版本为 1.1.2，旧 Hermes / 0.x 停更。
+当前是 1.1.3 原生 DSH QQ Agent；发布与验证记录以仓库根文档为准，旧 Hermes / 0.x 停更。
 安装/配置/启动重构与未验证项见 [迁移说明](../MIGRATION.md)，使用入口见 [README](../README.md)。
 
 ## 源码入口

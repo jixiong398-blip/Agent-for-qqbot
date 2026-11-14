@@ -1,7 +1,7 @@
 # Agent-for-qqbot：用户 AI 操作指南
 
 先读 [README.md](README.md)、[MIGRATION.md](MIGRATION.md) 与
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。当前是未发布的 **1.1.3 候选**，已发布版本为 1.1.2；旧 Hermes / 0.x 停更。
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。当前版本为 **1.1.3**；旧 Hermes / 0.x 停更。
 
 ## 入口与数据边界
 
@@ -41,4 +41,4 @@ Windows 通过相应 bat 或 bootstrap.ps1，Linux 通过 sh wrapper / Python 3.
 
 新授权已覆盖此前仅静态检查的约束；Windows / WSL 独立实例安装、原生 Web、双脑本地模型回合和重启恢复已验证。
 真实 QQ、外部发送和用户原有部署不在此次验证范围。具体通过项和未验证项以 MIGRATION 为准。
-仓库已发布 1.1.2；1.1.3 在准备中。后续提交、推送、tag、Release 和部署仍需使用者明确授权，不能由安装或测试隐式触发。
+1.1.3 预构建包位于仓库 Releases。后续提交、推送、tag、Release 和部署仍需使用者明确授权，不能由安装或测试隐式触发。
