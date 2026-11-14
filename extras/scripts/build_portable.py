@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'hermes/core'))
 from soyo.platform import is_link
 from package_source import allowed
-from soyo.app.install import source_fingerprint
+from soyo.app.install import patch_pi_ai_tree, source_fingerprint
 
 
 def sha(path):
@@ -150,7 +150,11 @@ def main():
     runtime = bundle / 'runtime/dsh'
     shutil.copytree(ROOT / 'hermes/core/soyo', runtime / 'worker/soyo', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     modules = Path(original['modules']).resolve(strict=True)
-    links = ClosureExport(modules, bundle, Path(original['directory'])).export()
+    exporter = ClosureExport(modules, bundle, Path(original['directory']))
+    links = exporter.export()
+    # Patch every materialized exact-version copy. pnpm and external portable
+    # targets can both be live dependency roots in the exported closure.
+    pi_ai_patch = patch_pi_ai_tree(bundle / 'runtime/dsh/native/node_modules')
     # Plugin source is current and neutral; compiled DSH/native modules remain the exact pinned build.
     for package, directory in {'dsh-host-boundary': 'host', 'dsh-dashboard': 'dashboard', 'dsh-asuna-ui': 'asuna-ui'}.items():
         target = runtime / 'native/node_modules/@soyo' / package
@@ -208,6 +212,7 @@ def main():
              'compiled_region_paths': 'logical dsh-source paths; generated comment prefixes only',
              'runtime': runtime.relative_to(bundle).as_posix(), 'node': node.relative_to(bundle).as_posix(),
              'cli': cli.relative_to(bundle).as_posix(), 'napcat': 'runtime/napcat', 'links': links, 'files': files,
+             'native_compat_patches': [pi_ai_patch],
              'unreleased_candidate': True, 'qq_integration_tested': False, 'release_licence_review_complete': False}
     (bundle / 'portable-manifest.json').write_text(json.dumps(value, indent=2), encoding='utf-8')
     archive_name = destination / (bundle.name + ('.zip' if os.name == 'nt' else '.tar.gz'))

@@ -1,14 +1,15 @@
 # 原生 DSH Host 边界（MIT）
 
 通过项目根目录的统一安装器装配，见 [主说明](../../../../README.md) 与
-[迁移状态](../../../../MIGRATION.md)。本轮为已做 Windows/WSL 本地验证的源码候选，尚未发布；范围见 [验证边界](../../../../VALIDATION.md)。
+[迁移状态](../../../../MIGRATION.md)。当前为未发布的 1.1.3 候选；本轮实际验证范围见 [验证边界](../../../../VALIDATION.md)。
 
 - 固定整套 Asuna DSH fork `0.2.1-rc.2` / `5713aab7963851d1a87482058c33c4af0e1c2ff8`，不只替换 UI 包。
 - `index.mjs` 是独立本机回环入口，保留 DSH Host/Origin/cookie/API/mux admission。
   默认本机直接进入，无额外 Key 页面；远程维护软件不属于用户产品。
   检查实际 TCP peer，不相信转发头；原生签名 cookie、Host/Origin 和 WebSocket admission 仍保留。
   `setup-api.mjs` 仅把原生用户配置 RPC 接到固定私有 supervisor，不暴露为模型工具或任意 URL。
-- `qq-native.mjs` 接收持久入站与单 writer 回执；只发布最终完成内容，不重放历史效果。
+- `qq-native.mjs` 接收持久入站与单 writer 回执；成功提交的正常正文可分阶段发布，不发布 reasoning 或未完成流，不重放历史效果。
+- `drawing-tools.mjs` 使用独立绘图凭据与场景权限；图片仍由角色经唯一 writer 附送，不把开放绘图等同于主机授权。
 - `role-runtime.mjs` / `dual-brain.mjs` 分离角色与行动权限；正文不能伪造 owner grant。
   内部兼容能力名 `host.root` 不授予系统 root，实际由当前用户与配置 sandbox/权限模式限制。
 - `platform.mjs` 处理 POSIX/Windows 私有文件、目录同步和鉴权 loopback/UDS；不在 Windows 跳过权限检查。

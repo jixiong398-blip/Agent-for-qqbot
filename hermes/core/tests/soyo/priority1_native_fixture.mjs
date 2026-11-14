@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Synthetic decisions only. The actual DSH/tool/process/Git/bwrap/ledger/RPC
 // paths are exercised; no external provider or OneBot writer is installed.
+// Stage this loader beside soyo-plugins/ containing the current soyo/dsh tree;
+// its relative imports describe that private fixture layout, not source layout.
 import { access, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';

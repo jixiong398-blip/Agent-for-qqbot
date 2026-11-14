@@ -13,6 +13,7 @@ import secrets
 
 from soyo.platform import protect
 from .config import atomic_json, metadata, project_root, read_json, validate
+from .compaction import SUMMARY_CEILING, configure_plugins, model_policy
 
 
 def render(home, config, runtime):
@@ -45,8 +46,11 @@ def render(home, config, runtime):
         "description": "QQ-only compaction services; no Web coding or delegation tools.",
         "plugins": [{"id": "compaction", "name": "cordis:group", "group": True,
             "isolate": {"compaction": True, "toolResultPruner": True}, "config": [
+                # DSH defaults summary output to its 64K headroom, not the
+                # brain's output limit. Exact model policies below scale both
+                # budgets for smaller windows while allowing a useful summary.
                 {"id": "compaction-basic", "name": "@deepseek-ai/dsh-compaction-basic",
-                 "config": {"thresholdRatio": 0.5, "retainRatio": 0.25, "auto": True}},
+                 "config": {"thresholdRatio": 0.5, "retainRatio": 0.25, "auto": True, "maxTokens": SUMMARY_CEILING}},
                 {"id": "tool-result-pruner", "name": "@deepseek-ai/dsh-compaction-tool-result-pruner",
                  "config": {"thresholdChars": 8192, "headChars": 4096, "tailChars": 1024}},
             ]}]}
@@ -96,6 +100,9 @@ def render(home, config, runtime):
         if routes[lane].get('reasoningEffort') == 'off' and not item.get('reasoning_efforts'):
             routes[lane].pop('reasoningEffort')  # Non-reasoning models expose no selectable effort at all.
     owner_route = routes["action-owner"] if "action-owner" in routes else routes["action"]
+    policies = [model_policy('qqbot-' + name, item) for name, item in entries]
+    configure_plugins(standard['plugins'], policies)
+    configure_plugins(qq_preset['plugins'], policies)
     action_item = next(item for name, item in entries if 'qqbot-' + name == owner_route['provider'])
     action_credential = "AGENT_QQBOT_KEY_" + owner_route['provider'].removeprefix('qqbot-').replace('-', '_').upper()
     if not (home / "persona/SOUL.md").is_file() or not (home / "persona/SOUL.md").read_text(encoding="utf-8").strip():
@@ -120,6 +127,9 @@ def render(home, config, runtime):
         "workspace": str(home / "workspace"), "python": sys.executable, "status_file": str(home / "run/gateway-status.json"),
         "soul_file": str(home / "persona/SOUL.md"), "behavior_file": str(home / "persona/BEHAVIOR.md"),
         "media_root": str(home / "media"), "publication_root": str(home / "qq-native/publications"),
+        # Pictures the owner sends over QQ are stored here. The drawing tools need
+        # this root to use an owner-supplied portrait as a reference image.
+        "attachment_root": str(home / "attachments"),
         "automation_root": str(home / "automation"), "qzone_root": str(home / "qzone"),
         "development_home": str(home / "development"), "knowledge_root": config["knowledge"]["directory"],
         "development_projects": config.get("development_projects", []), "development": config.get("development", {}),
@@ -127,6 +137,7 @@ def render(home, config, runtime):
         "briefing_fonts": config.get("briefing_fonts", {}), "cognition_enabled": config.get("features", {}).get("cognition", True),
         "automation_jobs": config.get("automation_jobs", []), "time_zone": config.get("time_zone") or "UTC",
         "character_name": config["character_name"],
+        "image_permissions": config.get('image_permissions', {'enabled': True, 'allow_group_members': False, 'group_ids': []}),
         "direct_root": False, "operator_ui_enabled": config.get("features", {}).get("operator_ui", True),
         "lifecycle": {"mode": "supervisor"}, "catchup_enabled": False, "brain_mode": "character-action",
         "owner_sessions": [config["profile"] + "-owner"], "owner_session_id": config["profile"] + "-owner",
@@ -140,6 +151,7 @@ def render(home, config, runtime):
             "label": config.get("action_label") or "行动助手 · 独立审阅"}}
     native.update(live2d_enabled=config['live2d'].get('enabled', False),
         live2d_url=f'http://127.0.0.1:{config["live2d_port"]}', live2d_key_file=str(home / 'private/live2d-key'))
+    render_image_gen(home, config, native)
     native.update(config.get("native_options", {}))
     native["automation_session_id"] = config["profile"] + "-automation"
     for route in config.get('agent_line', {}).get('routes', []):
@@ -255,6 +267,34 @@ def render_setup(home, config, runtime):
     atomic_json(home / 'private/model-environment.json', {})
     atomic_json(home / 'run/native-mode.json', {'setup': True})
     return {'setup_mode': True, 'qq_enabled': False}, profile
+
+
+def render_image_gen(home, config, native):
+    """Publish the drawing credential into the native worker config.
+
+    The key is written to its own private file and never merged into a brain
+    route or into model-environment.json, so rotating it can never disturb
+    models.action/action_owner/character. An unconfigured section stays
+    explicitly disabled: the drawing tool then refuses with
+    IMAGE_GEN_UNCONFIGURED instead of borrowing a text-only key.
+    """
+    drawing = config.get("image_gen") or {}
+    key_file = home / "private/image-gen-key"
+    if drawing:
+        if key_file.exists() and key_file.read_text(encoding="utf-8").strip() != drawing["api_key"]:
+            shutil.copy2(key_file, home / "backups" / ("image-gen-key-" + str(config["revision"])))
+        key_file.write_text(drawing["api_key"] + "\n", encoding="utf-8")
+        protect(key_file)
+        # The character's own long-term picture shelf: favourites survive the
+        # media-cache TTL and can be reused as reference images later.
+        shelf = home / "media/shelf"
+        shelf.mkdir(mode=0o700, parents=True, exist_ok=True)
+        protect(shelf, directory=True)
+    native["image_gen"] = {"enabled": bool(drawing), "base_url": drawing.get("base_url", ""),
+        "model": drawing.get("model", ""), "size": drawing.get("size", ""),
+        "timeout_ms": drawing.get("timeout_ms", 0), "key_file": str(key_file) if drawing else "",
+        "shelf_dir": str(home / "media/shelf") if drawing else ""}
+    return native["image_gen"]
 
 
 def _origin(value):

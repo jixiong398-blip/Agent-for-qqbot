@@ -57,6 +57,8 @@ hermes/docs/UPDATE_LOG.md
 /hermes/core/scripts/tailscale_loopback_proxy.mjs
 /hermes/core/scripts/qq_gateway_watchdog.py
 /hermes/core/scripts/repair_action_catalog.mjs
+# Retired server-vault-specific sync helper; product code uses configured workers.
+/hermes/core/scripts/bandori_sync.py
 
 # Live2D runtime files
 modules/live2d/live2d_pref.json
@@ -78,3 +80,12 @@ AGENTS.md
 .omo/
 .playwright-mcp/
 .pytest_cache/
+
+# Independently versioned maintainer checkout; not a Bot runtime or package input.
+/modules/napcat-for-self/
+# Retired bundled runtime; clean portable assets are separate reviewed inputs.
+/modules/napcat/
+# Host-specific maintenance handoff (contains private local paths).
+/NAPCAT_MAINTENANCE.md
+# Agent continuation state is maintainer-local, never product source.
+/.sisyphus/

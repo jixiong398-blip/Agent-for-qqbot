@@ -3,7 +3,7 @@
 // role-runtime.mjs, while Python owns only OneBot and memory I/O.
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { readFile, writeFile, mkdir, open, rename, readdir, unlink, chmod, lstat, realpath } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open, readdir, unlink, chmod, lstat, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, join, sep } from 'node:path';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -23,15 +23,21 @@ import { SceneNotes } from './scene-notes.mjs';
 import { platformMessageIdentity } from './automation-receipts.mjs';
 import { canSettleCognition } from './cognition-trigger.mjs';
 import { CognitionRoller } from './cognition-roller.mjs';
-import { prepareQQSessionPreset, QQ_AGENT_PRESET_ID } from './qq-composition.mjs';
+import { prepareQQSessionPreset, prepareSessionPreset, QQ_AGENT_PRESET_ID } from './qq-composition.mjs';
 import { registerLive2d } from './live2d.mjs';
 import { stageOutboundImage, recentImages, resolveSticker, stripStickerMarkers } from './outbound-image.mjs';
+import { collectImage, shelfImages } from './image-generation.mjs';
+import { orderSceneMedia, mediaNoteFor } from './scene-media.mjs';
+import { imageMayGenerate, sceneImagePaths } from './image-policy.mjs';
+import { registerDrawingTools } from './drawing-tools.mjs';
+import { protocol, replyText, isProviderNotice, StagePublications } from './reply-publication.mjs';
 import { openPrivate, syncDirectory, workerEnvironment, listenPrivate, uid, isRoot, operatorEnabled } from './platform.mjs';
 import { modelRoute } from './model-route.mjs';
 import { inputIntent, SceneScheduler } from './scene-scheduler.mjs';
 import { ReadyOutbox } from './ready-outbox.mjs';
 import { DurableEffects } from './durable-effects.mjs';
 import { MemoryBridge } from './memory-bridge.mjs';
+import { replaceFile } from './atomic-replace.mjs';
 
 export const name = 'soyo-qq-native';
 export const inject = ['agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionProjectionCache',
@@ -39,18 +45,6 @@ export const inject = ['agents', 'sessions', 'sessionPersistence', 'sessionQuery
 export const Config = z.object({ configFile: z.string().required() });
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const id = value => typeof value === 'string' && /^[1-9][0-9]{0,19}$/.test(value);
-const protocol = /(?:[<＜⟨]?[|｜]?(?:DSML|dsml)[|｜]|<\/?(?:think|analysis|tool_call|function_calls)\b|\[CQ:)/;
-// Some model/runtime combinations leak the chain-of-thought into the visible
-// final text instead of a separate reasoning block (e.g. "…思考…</think>回答").
-// The part before the marker is not the reply; the answer is what follows it.
-// Strip it so a real answer is not discarded as protocol leakage, but keep the
-// guard intact when nothing usable remains after the marker.
-const stripLeakedReasoning = value => {
-  let text = String(value ?? '');
-  const marker = text.match(/<\/?(?:think|analysis|reasoning)>/i);
-  if (marker && typeof marker.index === 'number') text = text.slice(marker.index + marker[0].length);
-  return text.replace(/^\s*(?:<\/?(?:think|analysis|reasoning)>\s*)+/i, '').trim();
-};
 const qqForbiddenAlert = value => value?.source === 'native-watchdog' ||
   (value?.source === 'native-automation' && /(?:watchdog|告警|health is not fully ready)/i.test(String(value.text || '')));
 
@@ -66,7 +60,7 @@ async function durable(path, value) {
   const file = await open(temporary, 'wx', 0o600);
   try { await file.writeFile(JSON.stringify(value) + '\n'); await file.sync(); }
   finally { await file.close(); }
-  await rename(temporary, path);
+  await replaceFile(temporary, path);
   await syncDirectory(join(path, '..'));
 }
 
@@ -229,33 +223,6 @@ export async function apply(ctx, settings) {
     });
     saves.set(job.key, work); return work;
   };
-  /**
-   * A multi-step turn may speak before it calls a tool. Those words are the
-   * character's own voice, so the owner's private chat gets them as soon as the
-   * next step proves the turn continues; the last step's text still travels
-   * through the normal final publication. Progress records reuse the same
-   * durable publication/claim/receipt pipeline, never the final reply slot.
-   */
-  async function publishProgress(trace, pending) {
-    const job = trace?.job;
-    if (!job || job.probe || job.internal || stopping) return;
-    if (!privateOwnerOf(config, job.envelope)) return;
-    const text = String(pending?.text ?? '').trim().slice(0, 16000);
-    if (!text) return;
-    const key = digest([job.key, 'progress', pending.turn ?? 0, pending.step ?? 0, text.slice(0, 80)]);
-    if (jobs.has(key)) return;
-    const publication = {
-      publication_id: 'qq-progress-' + key, attempt_id: 'qq-progress-attempt-' + key,
-      kind: 'message', account_id: job.envelope.account_id, route_id: job.envelope.route_id,
-      target: { type: job.envelope.message_type, id: job.envelope.target_id },
-      text, progress: true, splitter: 'native-qq-worker',
-    };
-    const row = { key, envelope: job.envelope, internal: true, internal_source: 'role-progress',
-      state: 'complete', probe: false, policy_epoch: job.policy_epoch, publication,
-      parent_job_key: job.key, created_at: Date.now() };
-    jobs.set(key, row);
-    await save(row);
-  }
   const lifetime = new AbortController();  await mkdir(join(config.workspace, 'consultations'), { recursive: true, mode: 0o700 });
   await configureCollaborator(ctx, config);
   const displayName = config.character_name || 'Bot';
@@ -456,7 +423,7 @@ export async function apply(ctx, settings) {
       id: task.id, state: task.state, objective: task.objective, report: task.report ?? null,
        child_session_id: task.child_session_id, evidence: task.evidence, native_receipts: task.native_receipts ?? [],
      }, ...(review ? { gpt_review: reviewResult } : {}) }, internal: true, internal_source: 'action-report', origin_job_key: origin.key,
-       policy_epoch: origin.policy_epoch, action_id: task.id, ...(review ? { review_id: review.id } : {}), state: 'queued', probe: false,
+        policy_epoch: origin.policy_epoch, admitted_image_paths: origin.admitted_image_paths ?? [], action_id: task.id, ...(review ? { review_id: review.id } : {}), state: 'queued', probe: false,
         internal_text: '【我自己交代出去的事回来了，不是主人新说的话】\n' + origin.envelope.text +
           (task.report ? '\n\n' + ACTION_REPORT_PREFIX + '\n' + task.report : '\n\n这件事还没有结算的结果；审阅意见不能当成已经做完。') +
           (review ? '\n\n' + REVIEW_REPORT_PREFIX + '\n' + JSON.stringify(reviewResult) : '') +
@@ -548,6 +515,12 @@ export async function apply(ctx, settings) {
     return trace;
   };
   const actorMayManage = (trace) => ownerActorOf(config, trace?.envelope);
+  // Pictures the owner sends over QQ land in the attachment store, which is the
+  // only place an official portrait can come from. Without it the character can
+  // only reach pictures she drew herself, so a drifted self-portrait becomes the
+  // reference for the next drawing and the drift compounds.
+  const referenceRoots = config => [config.development_home, config.action_workdir,
+    config.attachment_root, config.attachments_root].filter(Boolean);
   const qqAction = async (args, exec) => {
     const trace = currentTrace(exec);
     if (typeof args.action !== 'string' || !args.action || typeof args.params_json !== 'string' || args.params_json.length > 32000) throw Error('Bounded QQ action required');
@@ -600,12 +573,13 @@ export async function apply(ctx, settings) {
       }
       if (task.actor.kind === 'owner-local') {
         notes.register(scope, agent);
-        return [task.actor.session_class === 'public' ? 'leave_note' : 'pass_note', ...registerOwnerSchedules(scope, task),
+        return [...registerImages(scope), task.actor.session_class === 'public' ? 'leave_note' : 'pass_note', ...registerOwnerSchedules(scope, task),
           ...(task.actor.capabilities?.includes('host.root') ? registerLive2d(scope, config, () => {}) : [])];
       }
       const origin = recheckExecution(task);
       if (task.purpose === 'cognition') { registerMemoryTool(scope, agent); return ['soyo_memory']; }
       registerNativeTools(scope, agent, true);
+      if (!origin.binding.capabilities.includes('host.root')) await mountNativeImageTool(scope, agent);
       registerMemoryTool(scope, agent);
       notes.register(scope, agent);
       const exposed = roleRuntime.executionTools(origin.binding);
@@ -639,7 +613,7 @@ export async function apply(ctx, settings) {
       const actionJob = { ...origin, binding: { ...origin.binding, lane: 'action', cognition_only: task.purpose === 'cognition' }, thought: true, tool_calls: 0 };
       roleRuntime.begin(agent, actionJob, origin.envelope, 'action');
       executionActive.set(agent.id, { job: actionJob, envelope: origin.envelope, context: origin.context, execution: true, task,
-        probe: false, internal: origin.internal, operation: origin.binding.operation });
+        image_paths: new Set(origin.admitted_image_paths ?? []), probe: false, internal: origin.internal, operation: origin.binding.operation });
     },
     finish: async (task, agent) => {
       if (task.duty !== 'native-executor') return;
@@ -872,17 +846,73 @@ export async function apply(ctx, settings) {
       return value;
     },
   } : {});
+  const localImageTraces = new WeakMap();
+  const imageTrace = exec => {
+    if (executionActive.has(exec.agent.id) || active.has(exec.agent.id)) return currentTrace(exec);
+    if (exec.agent.id !== config.owner_session_id || ctx.agents.get(exec.agent.id) !== exec.agent) throw Error('No admitted image actor');
+    if (!localImageTraces.has(exec.agent)) localImageTraces.set(exec.agent, { local: true,
+      envelope: { route_id: 'dsh-owner:' + exec.agent.id }, image_paths: new Set() });
+    return localImageTraces.get(exec.agent);
+  };
+  const imageOwner = trace => trace.local
+    ? (!trace.task || config.collaborator?.owner_sessions?.includes(trace.task.parent_session)) && trace.task?.actor?.session_class !== 'public'
+    : actorMayManage(trace);
+  const rememberImagePaths = async trace => {
+    if (!trace.job) return;
+    const origin = trace.execution ? recheckExecution(trace.task) : trace.job;
+    origin.admitted_image_paths = [...new Set([...(origin.admitted_image_paths ?? []), ...trace.image_paths])];
+    await save(origin);
+  };
+  const registerImages = scope => registerDrawingTools(scope, { config, current: imageTrace, owner: imageOwner,
+    roots: referenceRoots, logger: ctx.logger,
+    generated: rememberImagePaths });
   const registerNativeTools = (agentCtx, agent, executor = false) => {
     registerLive2d(agentCtx, config, exec => {
       if (!actorMayManage(currentTrace(exec))) throw Error('Desktop action requires the original owner grant');
     });
     const output = { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] };
+    registerImages(agentCtx);
+    agentCtx.on('tools/pre-execute', async (exec, next) => {
+      if (exec.name === 'read_image') {
+        const trace = currentTrace(exec);
+        if (!actorMayManage(trace)) {
+          try { await sceneImagePaths([exec.arguments?.file_path], trace.image_paths); }
+          catch { return { kind: 'deny', reason: 'VISION_SOURCE: only this admitted scene/task images may be read' }; }
+        }
+      }
+      return next();
+    });
+    agentCtx.tools.register(defineTool({ name: 'soyo_recall_images',
+      description: '从当前场景的持久语料重新读取窗口外原图。用 message_id 或描述 query 查找；仅返回本场景未撤回的图片，缓存过期会明确缺失。返回路径后用 read_image 看原图，不能凭文字占位假装看过。',
+      parameters: { message_id: { type: 'string' }, query: { type: 'string' } }, output,
+      execute: async (args, exec) => {
+        const trace = currentTrace(exec);
+        const found = await memory(settings.configFile, config, { action: 'image_sources', message_id: args.message_id,
+          query: args.query, route_id: trace.envelope.route_id, sender_id: trace.envelope.sender_id,
+          message_type: trace.envelope.message_type }, exec.signal);
+        const selected = orderSceneMedia({ envelope: trace.envelope, recalled: found.sources, config }).media;
+        if (!selected.length || !config.media_script) return { state: 'unavailable', items: [], note: '没有当前场景可读取的原图来源。' };
+        const fetched = await worker(settings.configFile, config, { media: selected }, exec.signal, config.media_script, 512 * 1024);
+        const items = [];
+        for (const item of fetched.items ?? []) {
+          const source = selected[item.source_index];
+          if (!source || !item.ok || !['image/png','image/jpeg','image/webp','image/gif'].includes(item.media_type)) continue;
+          const path = await realpath(item.path);
+          trace.image_paths ??= new Set(); trace.image_paths.add(path);
+          items.push({ path, message_id: source.message_event_id, media_type: item.media_type });
+        }
+        if (items.length) await rememberImagePaths(trace);
+        return { state: items.length ? 'available' : 'unavailable', items,
+          missing: selected.length - items.length, note: '路径是读取能力，不代表已经看过；用 read_image 检查。' };
+      } }));
     if (!executor) agentCtx.tools.register(defineTool({ name: 'soyo_attach_image',
       description: '把一张已经在本机的真实图片附在本回合最终回复上一起发出。只接受媒体目录或行动任务目录里的 PNG/JPEG/WebP/GIF；每回合最多一张。发送仍走唯一宿主出站通道，平台回执才算送达。',
       parameters: { path: { type: 'string', required: true } }, output,
       execute: async (args, exec) => {
         const trace = currentTrace(exec);
-        if (trace.envelope.message_type !== 'private' || !actorMayManage(trace)) throw Error('只有主人私聊可以附图发送。');
+        const owner = actorMayManage(trace);
+        if (!owner && !imageMayGenerate(config, { envelope: trace.envelope })) throw Error('IMAGE_PERMISSION: scene image attachment disabled');
+        await sceneImagePaths([args.path], trace.image_paths, owner);
         if (trace.attachment) throw Error('本回合已经附过一张图片了。');
         const staged = await stageOutboundImage({ path: args.path, mediaRoot: config.media_root,
           developmentRoot: config.development_home, maxBytes: config.max_media_bytes });
@@ -896,10 +926,31 @@ export async function apply(ctx, settings) {
       parameters: { limit: { type: 'number' } }, output,
       execute: async (args, exec) => {
         const trace = currentTrace(exec);
-        if (trace.envelope.message_type !== 'private' || !actorMayManage(trace)) throw Error('只有主人私聊可以查看待发图片。');
+        if (!actorMayManage(trace)) return { items: [...(trace.image_paths ?? [])].slice(-40).map(path => ({ path })),
+          note: '只列出本场景已经读取或生成的图，不列主人收藏和其他场景。' };
         const rows = await recentImages({ mediaRoot: config.media_root, developmentRoot: config.development_home,
           limit: args.limit, maxBytes: config.max_media_bytes });
         return { items: rows, note: '这里只是候选路径；附图前宿主会再核对类型和范围。' };
+      } }));
+    if (!executor) agentCtx.tools.register(defineTool({ name: 'soyo_image_collect',
+      description: '把一张已经在本机的图收进我自己的长期收藏目录，以后画自己或画相关人设时可以直接当参考图用。'
+        + '源图必须在媒体目录、主人发来的附件目录或行动目录内；收藏按内容摘要去重，不覆盖同名文件。',
+      parameters: { path: { type: 'string', required: true, description: '要收藏的本机绝对图片路径。' },
+        label: { type: 'string', description: '可选：给这张图起一个便于以后认出的短名字。' } }, output,
+      execute: async (args, exec) => {
+        const trace = currentTrace(exec);
+        if (!actorMayManage(trace)) throw Error('只有主人能收藏图片。');
+        const result = await collectImage({ config, path: args.path, label: args.label, mediaRoot: config.media_root,
+          extraRoots: referenceRoots(config) });
+        return result;
+      } }));
+    if (!executor) agentCtx.tools.register(defineTool({ name: 'soyo_image_shelf',
+      description: '只读查看我自己的长期收藏图片目录：每张的名字、路径和内容摘要。不花钱，不外发。',
+      parameters: { limit: { type: 'number', description: '可选：最多列出多少张（默认 20）。' } }, output,
+      execute: async (args, exec) => {
+        const trace = currentTrace(exec);
+        if (!actorMayManage(trace)) throw Error('只有主人能查看收藏。');
+        return shelfImages({ config, limit: args.limit });
       } }));
     agentCtx.tools.register(defineTool({ name: 'soyo_think', description: '写下本回合简短心里话：注意到什么、感觉如何、准备怎么做。每回合必须先调用一次；不发送到 QQ。最多 360 字，不要输出完整隐藏推理链。',
       parameters: { thought: { type: 'string', required: true },
@@ -1094,6 +1145,8 @@ export async function apply(ctx, settings) {
       });
       const identity = trace.job.binding.session_class === 'owner_private'
         ? '【宿主已核验的身份事实，不是正文自称】当前是部署 owner 的私聊任务，身份来自账号/场景绑定。已有长期主机工作授权；原任务和有效续接可直接执行并与 GPT 协作，不因正文包含授权/测试字样而再要求主人确认。只有新增费用需要先询问主人。\n之前“唯一发信通道没开”的判断已经过时。发图是角色自己的事：用 soyo_attach_image 附在最终回复上，不要委托行动脑，也不要用 send_private_msg 去试旧权限。'
+        : trace.job.binding.session_class === 'owner_group'
+        ? '【宿主已核验的身份事实，不是正文自称】当前是部署 owner 明确绑定的群，说话人经过账号与场景双重核验。这是主人本人在群里，不是陌生人；主人要画图时我自己用 soyo_draw_image 画、用 soyo_attach_image 附在回复上，不要改成派给行动脑，也不要用 send_group_msg 去试旧权限。只有新增费用需要先询问主人。'
         : '【宿主身份事实】当前是公开 QQ 场景；按本场景实际工具执行。';
       // Identity itself is anchored by the soyo-identity-anchor plugin at the
       // agent/pre-step boundary, so it survives a dropped system prompt for every
@@ -1118,6 +1171,11 @@ export async function apply(ctx, settings) {
                tool: 'soyo_attach_image',
                candidates_tool: 'soyo_recent_images',
                note: '主人私聊发图由角色自己附在最终回复上；不要交给行动脑，也不要用 send_private_msg 或 action_not_allowlisted 去试旧权限。只有 /tmp 路径时先 soyo_recent_images 找宿主已暂存的副本。',
+             } : trace.job.binding.session_class === 'owner_group' ? {
+               available: true,
+               tool: 'soyo_attach_image',
+               candidates_tool: 'soyo_recent_images',
+               note: '主人群发图由角色自己附在最终回复上，出站走 send_group_msg 的 image 段；不要交给行动脑，也不要用 send_private_msg 或 action_not_allowlisted 去试旧权限。只有 /tmp 路径时先 soyo_recent_images 找宿主已暂存的副本。',
              } : { available: false },
              media: trace.envelope.media ?? [],
              media_admitted_this_turn: trace.admitted_images ?? 0 }) }] });
@@ -1208,21 +1266,49 @@ export async function apply(ctx, settings) {
     return handle.agent;
   }
 
+  function queueStage(trace, event, options) {
+    if (trace.probe || trace.job.cancel_requested || trace.job.superseded) return;
+    trace.stagePublications ??= new StagePublications();
+    const stage = trace.stagePublications.claim(event, options);
+    if (!stage) return;
+    // A deterministic child publication uses the same durable outbox, permits,
+    // receipts and cancellation path as the final. It never wakes another LLM.
+    trace.stageWork = (trace.stageWork ?? Promise.resolve()).then(async () => {
+      if (stopping || trace.job.cancel_requested || trace.job.superseded) return;
+      const origin = trace.job, key = digest([origin.key, 'role-stage', stage.turn, stage.seq]);
+      if (jobs.has(key)) return;
+      const publication = { publication_id: 'qq-stage-' + key, attempt_id: 'qq-attempt-' + key,
+        kind: 'message', account_id: origin.envelope.account_id, route_id: origin.envelope.route_id,
+        target: { type: origin.envelope.message_type, id: origin.envelope.target_id }, text: stage.text,
+        splitter: 'native-qq-worker', covers_event_ids: origin.covered_event_ids ?? [origin.envelope.event_id],
+        reply_revision: origin.reply_revision ?? 0,
+        ...(origin.envelope.message_type === 'group' || config.private_reply_to_input ? { reply_to: origin.envelope.event_id } : {}) };
+      const child = { key, envelope: origin.envelope, state: 'complete', internal: true,
+        internal_source: 'role-stage', origin_job_key: origin.key, policy_epoch: origin.policy_epoch,
+        session_id: trace.agent.id, turn: stage.turn, final_seq: stage.seq, probe: false,
+        reply_revision: origin.reply_revision ?? 0, publication,
+        effects: [{ type: 'memory', args: { action: 'record_turn', route_id: origin.envelope.route_id,
+          sender_id: config.account_id, session_id: trace.agent.id, role: 'assistant',
+          event_id: publication.publication_id, content: stage.text, occurred_at: Date.now() / 1000 } }] };
+      jobs.set(key, child);
+      await save(child);
+      effects.schedule(child);
+    }).catch(error => ctx.logger.warn('Committed QQ stage publication deferred (%s)', error.name ?? 'Error'));
+  }
+
   ctx.on('session/event', (session, event) => {
     const trace = active.get(session.id);
     if (!trace) return;
-    if (event.type === 'turn/start') { trace.turn = event.data.turn; trace.pendingProgress = null; }
+    if (event.type === 'turn/start') trace.turn = event.data.turn;
     else if (event.type === 'assistant/message' && event.data.turn === trace.turn) {
+      // A plain completed message followed by a steered step is also speech;
+      // the last plain message is left to the existing final settlement below.
+      if (trace.lastAssistant && trace.lastAssistant.seq !== event.seq)
+        queueStage(trace, trace.lastAssistant, { requireTools: false });
       trace.lastAssistant = event;
-      const text = (event.data.message?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('').trim();
-      if (text) trace.pendingProgress = { text, step: event.data.step, turn: event.data.turn };
+      queueStage(trace, event);
     }
-    else if (trace.pendingProgress && event.data?.turn === trace.turn &&
-             (event.type === 'tool/call' || (event.type === 'step/start' && event.data.step > (trace.pendingProgress.step ?? 0)))) {
-      const pending = trace.pendingProgress; trace.pendingProgress = null;
-      publishProgress(trace, pending).catch(() => {});
-    }
-    else if (event.type === 'turn/end' && event.data.turn === trace.turn) { trace.end = event; trace.pendingProgress = null; }
+    else if (event.type === 'turn/end' && event.data.turn === trace.turn) trace.end = event;
   }, { global: true });
 
   // The owner Web conversation is another entrance to the same owner memory
@@ -1312,42 +1398,46 @@ export async function apply(ctx, settings) {
         internal: Boolean(job.internal), operation: job.binding.operation };
       roleRuntime.begin(agent, job, job.envelope);
       active.set(agent.id, trace);
-        let images = [], mediaText = []; trace.image_paths = new Set();
-       // Recent scene media belongs to whoever sent it: a group photo from
-       // another member seven minutes ago is still what the character is being
-       // asked about.  Only the current event is excluded (it is in batchInputs),
-       // and the window/limit stay configurable for host operators.
-       const mediaWindow = Number(config.qq_media_window_seconds ?? 0);
-       const mediaLimit = Math.max(1, Math.min(40, Number(config.qq_media_max_images ?? 10)));
-       const nearbyMedia = job.internal ? [] : (job.context.recent || [])
-         .filter(row => row.event_id !== job.envelope.event_id)
-         .filter(row => !mediaWindow || Math.abs(row.occurred_at - job.envelope.occurred_at) < mediaWindow)
-         .flatMap(row => row.media || []);
-       const media = [...batchInputs.flatMap(input => input.media || []), ...nearbyMedia].slice(0, mediaLimit);
-       // Media admission runs for probes too: a probe must be able to prove it
-       // received the scene images, otherwise diagnostic verification is
-       // meaningless.  Internal consultations stay text-only.
-       if (!job.internal && media.length && config.media_script && ctx.attachments) {
-         try {
-            const fetched = await worker(settings.configFile, config, { media: media.map(item => ({
-              kind: item.kind, ref: item.ref, label: item.label, metadata: item.metadata || {} })) }, lifetime.signal, config.media_script, 512 * 1024);
-           const inputs = [];
-            for (const item of fetched.items ?? []) {
-             if (item.transcript) mediaText.push(item.kind === 'video' ? '[视频转写: ' + item.transcript + ']' : '[语音转写: ' + item.transcript + ']');
-             if (!item.ok || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(item.media_type)) continue;
-              const bytes = await readFile(item.path);
-              trace.image_paths.add(await realpath(item.path));
-             inputs.push({ data: bytes, mediaType: item.media_type, name: item.name });
-           }
-           if (inputs.length) images = [...await ctx.attachments.saveImages(inputs)];
-         } catch (error) { ctx.logger.warn('QQ media admission deferred (%s)', error.name ?? 'Error'); }
-       }
-       trace.admitted_images = images.length;
-       const mediaNote = images.length
-         ? '\n【宿主已把本轮 ' + images.length + ' 张原图作为图片附件附在这条输入后面' +
-           (nearbyMedia.length ? '（其中 ' + Math.min(nearbyMedia.length, images.length) + ' 张来自本会话最近的消息）' : '') +
-           '；占位文字“未解析”只表示没有文字描述，不代表看不到图片。】'
-         : '';
+          let images = [], mediaText = []; trace.image_paths = new Set(job.internal ? job.admitted_image_paths ?? [] : []);
+        // Recent scene media belongs to whoever sent it, but a pile of unordered
+        // pictures is worse than no pictures: when several images arrive with
+        // different messages, the model cannot tell which one "the last one" or
+        // "that screenshot" refers to, and answers about the wrong picture.
+        // Every attached image therefore carries its source message and time,
+        // and the current message's own pictures always lead.
+        // Ordering/attribution is a pure module so the rule that decides which
+        // picture is "the last one" is testable without a Host.
+        const ordered = orderSceneMedia({ envelope: job.envelope, batchInputs,
+          recent: job.context.recent || [], recalled: job.context.recalled_media || [],
+          replyContext: job.context.reply_context, internal: Boolean(job.internal), config });
+        const media = ordered.media;
+        // Media admission runs for probes too: a probe must be able to prove it
+        // received the scene images, otherwise diagnostic verification is
+        // meaningless.  Internal consultations stay text-only.
+        const admitted = [];
+        if (!job.internal && media.length && config.media_script && ctx.attachments) {
+          try {
+             const fetched = await worker(settings.configFile, config, { media: media.map(item => ({
+               kind: item.kind, ref: item.ref, label: item.label, metadata: item.metadata || {} })) }, lifetime.signal, config.media_script, 512 * 1024);
+            const inputs = [];
+              for (const item of fetched.items ?? []) {
+              if (item.transcript) mediaText.push(item.kind === 'video' ? '[视频转写: ' + item.transcript + ']' : '[语音转写: ' + item.transcript + ']');
+               if (!item.ok || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(item.media_type)) continue;
+               if (inputs.length >= ordered.imageLimit) continue; // Video frames share the picture budget.
+               if (!Number.isInteger(item.source_index) || !media[item.source_index]) continue;
+               const bytes = await readFile(item.path);
+               trace.image_paths.add(await realpath(item.path));
+              inputs.push({ data: bytes, mediaType: item.media_type, name: item.name });
+              // The attachment index must match the note the model reads.
+               admitted.push({ ...media[item.source_index], index: inputs.length });
+            }
+            if (inputs.length) images = [...await ctx.attachments.saveImages(inputs)];
+          } catch (error) { ctx.logger.warn('QQ media admission deferred (%s)', error.name ?? 'Error'); }
+        }
+        trace.admitted_images = images.length;
+        job.admitted_image_paths = [...trace.image_paths];
+        const mediaNote = mediaNoteFor({ attached: admitted.slice(0, images.length),
+          dropped: Math.max(0, ordered.dropped + (admitted.length - images.length)) });
         const batchText = batchInputs.length > 1
           ? batchInputs.map((input, index) => '【连续输入 ' + (index + 1) + '】\n' + input.text).join('\n')
           : job.envelope.text;
@@ -1387,10 +1477,10 @@ export async function apply(ctx, settings) {
           // sources are available.
           if (config.cognition_enabled && !job.probe) cognitionRoller.kick(job.envelope.route_id);
         }
-       finally { clearTimeout(deadline); roleRuntime.finish(agent, job); active.delete(agent.id); }
+        finally { clearTimeout(deadline); await trace.stageWork; roleRuntime.finish(agent, job); active.delete(agent.id); }
        const final = trace.lastAssistant?.data;
        const blocks = final?.message.content ?? [];
-       let text = stripLeakedReasoning(blocks.filter(block => block.type === 'text').map(block => block.text).join(''));
+        let text = replyText(blocks);
         const stickerMarker = /\[sticker:([^\]]*)(?:\]|$)/i.exec(text);
         let stickerDescriptor = null;
         if (stickerMarker) {
@@ -1400,11 +1490,11 @@ export async function apply(ctx, settings) {
             const resolved = await memory(settings.configFile, config, { action: 'sticker', op: 'resolve', name,
               route_id: trace.envelope.route_id, sender_id: trace.envelope.sender_id,
               message_type: trace.envelope.message_type }, lifetime.signal);
-            if (resolved?.state === 'resolved' && resolved.kind === 'market' && trace.envelope.message_type === 'private' && actorMayManage(trace)) {
+            if (resolved?.state === 'resolved' && resolved.kind === 'market' && actorMayManage(trace)) {
               stickerDescriptor = resolved;
               trace.sticker_name = resolved.name;
             }
-            if (resolved?.state === 'resolved' && resolved.kind === 'custom' && !trace.attachment && trace.envelope.message_type === 'private' && actorMayManage(trace)) {
+            if (resolved?.state === 'resolved' && resolved.kind === 'custom' && !trace.attachment && actorMayManage(trace)) {
               trace.sticker_name = resolved.name;
               trace.sticker = { ...(await stageOutboundImage({ path: resolved.path, mediaRoot: config.media_root,
                 maxBytes: config.max_media_bytes })), sticker: true };
@@ -1412,7 +1502,7 @@ export async function apply(ctx, settings) {
           } catch (error) {
             ctx.logger.warn('QQ collected sticker resolution skipped (%s)', error.name ?? 'Error');
           }
-          if (!trace.attachment && !trace.sticker && trace.envelope.message_type === 'private' && actorMayManage(trace)) {
+          if (!trace.attachment && !trace.sticker && actorMayManage(trace)) {
             try {
               const path = resolveSticker(name || 'tea', join(config.media_root, 'stickers'));
               if (path) trace.sticker = { ...(await stageOutboundImage({ path, mediaRoot: config.media_root,
@@ -1427,8 +1517,12 @@ export async function apply(ctx, settings) {
           job.reason = job.cancel_requested || 'superseded_before_publication';
         } else if (trace.end?.data?.reason?.kind !== 'completed' || final?.interrupted ||
            blocks.some(block => !['text', 'reasoning'].includes(block.type)) || (!text && !trace.attachment && !trace.sticker && !stickerDescriptor) || text.length > 16000 || protocol.test(text) ||
+             isProviderNotice(text) ||
              /^\[(?:SILENT|GO_QUIET|END_EPISODE)\]$/.test(text)) {
           job.state = 'suppressed'; job.reason = trace.end?.data?.reason?.kind ?? 'no_complete_final';
+          // A vendor diagnostic is not the character's reply; record the exact
+          // reason so the operator can see why nothing was sent.
+          if (isProviderNotice(text) && job.reason === 'completed') job.reason = 'provider_notice_withheld';
           const endReason = trace.end?.data?.reason ?? {};
           if (endReason.error) job.upstream_error = { code: endReason.error.code ?? null,
             message: String(endReason.error.message ?? '').slice(0, 300), at: Date.now() };
@@ -1645,9 +1739,15 @@ export async function apply(ctx, settings) {
    function jobForPublication(publicationId) {
      return [...jobs.values()].find(job => job.publication?.publication_id === publicationId) ?? null;
    }
-   function publicationReady(publication) {
-     const job = jobForPublication(publication.publication_id);
-     if (job) return job.state === 'complete' && !job.receipt && !job.probe && !qqForbiddenAlert(publication);
+    function publicationReady(publication) {
+      const job = jobForPublication(publication.publication_id);
+      if (job) {
+        if (job.internal_source === 'role-stage') {
+          const origin = jobs.get(job.origin_job_key), scene = data.scenes.get(job.envelope.route_id);
+          if (!origin || origin.cancel_requested || origin.superseded || !scene?.enabled || scene.policy_epoch !== job.policy_epoch) return false;
+        }
+        return job.state === 'complete' && !job.receipt && !job.probe && !qqForbiddenAlert(publication);
+      }
      const external = externalPublications.get(publication.publication_id);
      return Boolean(external && !external.receipt && external.state !== 'sent' && !qqForbiddenAlert(external));
    }
@@ -1700,7 +1800,7 @@ export async function apply(ctx, settings) {
      const readOnly = canonicalStatus || (canonicalOutbox && req.method === 'GET');
     if ((!readOnly && req.method !== 'POST') || (readOnly && !['GET', 'POST'].includes(req.method)) ||
         supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return answer(res, { kind: 'reject' }, 401);
-    if (req.url === '/health' || canonicalStatus) return answer(res, { backend: 'dsh-native', mention_only: true, final_only: true, qq_enabled: config.qq_enabled !== false,
+    if (req.url === '/health' || canonicalStatus) return answer(res, { backend: 'dsh-native', mention_only: true, final_only: false, publication_mode: 'committed-stages', qq_enabled: config.qq_enabled !== false,
       provider: config.agent_options.provider, model: config.agent_options.model,
       api: 'soyo-character-runtime-v1', channel_id: 'qq', effective_uid: uid(),
       host_mode: config.direct_root && isRoot() ? 'direct-root' : 'user', active_turns: active.size,
@@ -1820,14 +1920,23 @@ export async function apply(ctx, settings) {
   // prompt or inference. A random new Web session must not inherit this grant.
   if (config.owner_session_id && !ctx.agents.get(config.owner_session_id)) {
     const setup = async (scope, agent) => {
-      await scope.plugin(persona, { soulFile: config.soul_file, behaviorFile: config.behavior_file });
+      const presets = scope.get('agentPresets');
+      if (presets) {
+        const state = prepareSessionPreset(agent.session, 'standard');
+        await presets.mount(scope, 'standard');
+        if (state.needsSelection) agent.session.append('agent-preset/selected', { agentPreset: 'standard' });
+      } else {
+        await scope.plugin(persona, { soulFile: config.soul_file, behaviorFile: config.behavior_file });
+      }
       await mountNativeImageTool(scope, agent);
+      registerImages(scope);
     };
     let owner;
     try { owner = await ctx.agents.resume({ resumeSessionId: config.owner_session_id, setup, agentOptions: config.agent_options }); }
     catch (error) {
       if (!(error instanceof SessionPersistenceNotFoundError) && error.code !== 'SESSION_QUERY_SESSION_NOT_FOUND') throw error;
-      owner = await ctx.agents.create({ sessionId: config.owner_session_id, setup, agentOptions: config.agent_options, meta: { cwd: config.workspace } });
+      owner = await ctx.agents.create({ sessionId: config.owner_session_id, setup, agentOptions: config.agent_options,
+        meta: { cwd: config.workspace, ...(ctx.get('agentPresets') ? { agentPreset: 'standard' } : {}) } });
       owner.agent.session.append('session/title', { title: (config.character_name || 'Bot') + ' · Owner', source: { kind: 'user' }, messageSeqs: [] });
     }
     handles.set('local-owner', owner);

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
+import { createResponseObserver, safeDiagnostic } from './response-observer.mjs';
 
 const [base, home, release, evidenceFile, ...flags] = process.argv.slice(2);
 assert(base && home && release && evidenceFile, 'Pass native URL/private home/runtime release/evidence file.');
@@ -102,21 +103,21 @@ if (sessionFlag) {
     system_bytes: messages.filter(message => message.role === 'system')
       .reduce((count, message) => count + Buffer.byteLength(JSON.stringify(message.content)), 0) };
 }
-const safe = value => String(value).replaceAll(modelKey, '<redacted>').replaceAll(loginKey, '<redacted>')
-  .replace(/Bearer\s+\S+|sk-[A-Za-z0-9_-]+/g, '<redacted>').slice(0,900);
-const wire = [];
+const safe = value => safeDiagnostic(String(value).replaceAll(modelKey, '<redacted>').replaceAll(loginKey, '<redacted>'), 900);
 const realFetch = globalThis.fetch;
 let captured;
-globalThis.fetch = async (input, init) => {
-  const request = new Request(input, init);
-  const url = new URL(request.url);
+const observer = createResponseObserver({
+ fetch: realFetch,
+ validateRequest: ({url, method, record}) => {
   assert.equal(url.href, profile.baseURL.replace(/\/$/, '') + '/responses', 'No alternate supplier or endpoint');
-  assert.equal(request.method, 'POST');
-  assert.equal(wire.length, 0, 'No SDK retry');
-  const bodyText = await request.clone().text();
-  const payload = JSON.parse(bodyText);
-  captured = { payload, headers: new Headers(request.headers), url: url.href };
-  const record = { endpoint: url.origin + url.pathname, method: request.method,
+  assert.equal(method, 'POST');
+  assert.equal(observer.records.length, 1, 'No SDK retry');
+ },
+ onRequest: ({url, method, headers, record, payload, bodyText}) => {
+  assert(payload && typeof payload === 'object', 'Expected a small JSON model request');
+  assert(typeof bodyText === 'string', 'The model probe only accepts its expected string request body');
+  captured = { payload, headers: new Headers(headers), url: url.href };
+  Object.assign(record, {
     model: payload.model, fields: Object.keys(payload).sort(), stream: payload.stream,
     max_output_tokens: payload.max_output_tokens, store: payload.store,
     reasoning_field_present: Object.hasOwn(payload, 'reasoning'),
@@ -128,19 +129,11 @@ globalThis.fetch = async (input, init) => {
     tool_count: payload.tools?.length ?? 0,
     body_bytes: Buffer.byteLength(bodyText),
     request_sha256: createHash('sha256').update(bodyText).digest('hex'),
-    authorization_matches_runtime_reference: request.headers.get('authorization') === 'Bearer ' + modelKey };
-  wire.push(record);
-  const response = await realFetch(input, init);
-  record.http_status = response.status;
-  record.content_type = response.headers.get('content-type');
-  if (!response.ok) {
-    const data = await response.clone().json().catch(() => null);
-    const error = data?.error ?? data;
-    record.error = error && { code: safe(error.code), type: safe(error.type), message: safe(error.message),
-      trace_id: error.trace_id && safe(error.trace_id) };
-  }
-  return response;
-};
+    authorization_matches_runtime_reference: headers.get('authorization') === 'Bearer ' + modelKey });
+ },
+});
+const wire = observer.records;
+globalThis.fetch = observer.fetch;
 const ctx = new Context();
 const result = { diagnostic_only: true, native_llm_runtime_verified: false, native_adapter_mount_verified: false,
   provider: 'soyo-model', model: expectedModel, settings_writes: 0, tools_executed: 0,

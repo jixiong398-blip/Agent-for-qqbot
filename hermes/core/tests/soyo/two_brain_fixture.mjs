@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Synthetic inference only; real QQ Host admission, DSH tools, files, SQLite and durable reports.
+// Stage this loader beside soyo-plugins/ containing the current soyo/dsh tree;
+// its relative imports describe that private fixture layout, not source layout.
 import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { LlmAdapter, createMessage } from '@deepseek-ai/dsh-llm';

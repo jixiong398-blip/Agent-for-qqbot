@@ -58,6 +58,9 @@ node_modules/
 
 # ── 根级残留/运行时生成（core/ 内同名目录保留）──
 .cache/
+# QQ 客户端在仓库根落下的日志缓存（运行时产物，不是源码）
+/log/
+/log-cache/
 /bin/
 /cron/
 /skills/

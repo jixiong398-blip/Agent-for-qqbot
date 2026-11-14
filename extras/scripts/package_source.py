@@ -14,12 +14,13 @@ ROOT = Path(__file__).resolve().parents[2]
 ROOT_FILES = {'README.md', 'USER_AGENTS.md', 'UPGRADE.md', 'MIGRATION.md', 'VALIDATION.md', 'THIRD_PARTY_NOTICES.md',
     'LICENSE', 'VERSION', 'CHANGELOG.md', 'application.toml', 'install.bat', 'start.bat', 'Stop-All.bat',
     '配置API.bat', 'update.bat', 'install.sh', 'start.sh', 'configure.sh', 'stop.sh', 'update.sh', '.gitignore', '.gitattributes'}
+COMPAT_DOCS = {'hermes/' + name for name in ROOT_FILES if name.endswith('.md')}
 SCRIPT_FILES = {'bootstrap.py', 'bootstrap.ps1', 'portable_launcher.py', 'build_portable.py', 'install.py', 'setup_config.py', 'upgrade.py', 'decrypt_cvpkg.py', 'package_source.py'}
 
 
 def allowed(name):
     p = Path(name)
-    if name in ROOT_FILES or name in {'hermes/README.md', 'hermes/.gitattributes', 'hermes/core/LICENSE', 'hermes/core/pyproject.toml'}: return True
+    if name in ROOT_FILES or name in COMPAT_DOCS or name in {'hermes/.gitattributes', 'hermes/core/LICENSE', 'hermes/core/README.md', 'hermes/core/pyproject.toml', 'third_party/README.md', 'third_party/napcat-source.json'}: return True
     if name.startswith('templates/'): return p.name in {'deployment.example.json', 'deployment.local.example.json', 'SOUL-template.md', 'README.md', 'BEHAVIOR-template.md', '.env.template', 'config-template.yaml'}
     if name.startswith('hermes/templates/'): return p.name in {'SOUL-template.md', 'CORTEX.md', 'CEREBELLUM.md', '.env.template', 'config-template.yaml'}
     if name.startswith('extras/scripts/'): return p.name in SCRIPT_FILES
@@ -27,7 +28,7 @@ def allowed(name):
     if name.startswith('hermes/core/soyo/'):
         return '__pycache__' not in p.parts and p.suffix in {'.py', '.mjs', '.js', '.json', '.md'} or name.startswith('hermes/core/soyo/') and p.name == 'LICENSE'
     if name.startswith('hermes/core/tests/soyo/'):
-        return '__pycache__' not in p.parts and (p.name == 'conftest.py' or p.name.startswith('test_') and p.suffix == '.py'
+        return '__pycache__' not in p.parts and (p.name in {'conftest.py', 'response-observer.mjs', 'qq_final_only_native_probe.mjs', 'drawing_tools_native_probe.mjs', 'pi_ai_native_probe.mjs'} or p.name.startswith('test_') and p.suffix == '.py'
             or p.name.endswith('.test.mjs') or p.name.startswith('dsh_') and p.name.endswith('_test.mjs'))
     if name.startswith('modules/dashboard/'):
         return name in {'modules/dashboard/server.py', 'modules/dashboard/static/index.html', 'modules/dashboard/static/app.css', 'modules/dashboard/static/app.js'}

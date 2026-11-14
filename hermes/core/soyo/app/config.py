@@ -15,6 +15,12 @@ from urllib.parse import urlsplit
 
 from soyo.platform import assert_private, file_lock, is_link, private_fchmod, protect, sync_directory, load_private_json
 
+# A separate drawing credential. It is deliberately its own section so a
+# text-reasoning key can never be reused for images by editing a brain route.
+IMAGE_GEN_FIELDS = {"base_url", "api_key", "model", "size", "timeout_ms"}
+IMAGE_GEN_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+IMAGE_GEN_SIZE = re.compile(r"[1-9][0-9]{1,4}x[1-9][0-9]{1,4}")
+
 NATIVE_OPTIONS = {"max_media_bytes", "media_cache_max_items", "chunk_delay_seconds", "reply_part_chars", "max_reply_parts",
     "bandori_knowledge_root", "bandori_source_url", "bandori_sitemap_path", "bandori_language", "bandori_article_sections",
     "legacy_memory_db", "legacy_cron_file", "action_turn_timeout_ms", "character_turn_timeout_ms",
@@ -113,6 +119,8 @@ def initialize(home):
                 "briefing_fonts": {"regular": "", "bold": ""},
                 "automation_jobs": [], "development_projects": [], "development": {"backend": "disabled"},
                 "agent_line": {"routes": []}, "native_options": {},
+                "image_gen": {"base_url": "", "api_key": "", "model": "", "size": "", "timeout_ms": 0},
+                "image_permissions": {"enabled": True, "allow_group_members": False, "group_ids": []},
                 "feishu": {"app_id": "", "app_secret": "", "chat_id": ""},
                 "time_zone": "", "executables": {}, "runtime": {}, "registries": copy.deepcopy(metadata()["registries"])})
             atomic_json(path, values)
@@ -213,6 +221,45 @@ def model(value, *, required=False):
     return result
 
 
+def image_gen(value):
+    """The character's own drawing credential, separate from every brain lane.
+
+    This section never falls back to models.action or models.character: an
+    absent or partial section stays explicitly unconfigured so the drawing
+    tool fails loudly instead of borrowing a text key that cannot draw.
+    """
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, dict) or set(value) - IMAGE_GEN_FIELDS:
+        raise ValueError("Unsupported image_gen fields; the drawing credential is its own section")
+    configured = any(isinstance(value.get(key), str) and value[key].strip() for key in ("base_url", "api_key", "model"))
+    if not configured:
+        return {}
+    base_url = value.get("base_url")
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ValueError("image_gen.base_url is required alongside its own key")
+    result = {"base_url": endpoint(base_url, {"http", "https"})}
+    key = value.get("api_key")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError("image_gen.api_key is required; the drawing key is not shared with a brain route")
+    if not key.isascii() or any(c in key for c in "\r\n\x00"):
+        raise ValueError("Invalid image_gen credential")
+    model = value.get("model")
+    if not isinstance(model, str) or not IMAGE_GEN_MODEL.fullmatch(model):
+        raise ValueError("image_gen.model must be an explicit provider model id")
+    result["api_key"] = key
+    result["model"] = model
+    size = value.get("size", "")
+    if size and (not isinstance(size, str) or not IMAGE_GEN_SIZE.fullmatch(size)):
+        raise ValueError("image_gen.size must look like WIDTHxHEIGHT")
+    result["size"] = size
+    timeout = value.get("timeout_ms", 0)
+    if type(timeout) is not int or not 0 <= timeout <= 600000:
+        raise ValueError("image_gen.timeout_ms must be 0 (default) or at most 600000")
+    result["timeout_ms"] = timeout
+    return result
+
+
 def validate(config, *, ready=False):
     if not isinstance(config, dict) or config.get("schema_version") != 1:
         raise ValueError("Unsupported native configuration schema")
@@ -274,6 +321,16 @@ def validate(config, *, ready=False):
         if route.get('reasoningEffort') == 'none': route['reasoningEffort'] = 'off'
         if route.get("reasoningEffort") and route["reasoningEffort"] not in {item.get("reasoning_effort"), "off", "minimal", "low", "medium", "high", "xhigh", "max"}:
             raise ValueError("Invalid native reasoning effort")
+    config["image_gen"] = image_gen(config.get("image_gen"))
+    permissions = config.setdefault('image_permissions', {'enabled': True, 'allow_group_members': False, 'group_ids': []})
+    if not isinstance(permissions, dict) or set(permissions) - {'enabled', 'allow_group_members', 'group_ids'}:
+        raise ValueError('Unsupported image_permissions fields')
+    for key, default in [('enabled', True), ('allow_group_members', False)]:
+        if type(permissions.setdefault(key, default)) is not bool:
+            raise ValueError('Drawing permissions must be booleans')
+    groups = permissions.setdefault('group_ids', [])
+    if not isinstance(groups, list) or len(groups) > 256 or any(not isinstance(v, str) or not re.fullmatch(r'[1-9][0-9]{0,19}', v) for v in groups):
+        raise ValueError('Drawing group allowlist must contain bounded group ids')
     qq = config["onebot"]
     if type(qq.get("enabled", False)) is not bool:
         raise ValueError("QQ integration must be enabled explicitly")
@@ -455,7 +512,7 @@ def update(home, changes, revision):
         old = read_json(path)
         if type(revision) is not int or revision != old["revision"]:
             raise ValueError("CONFIG_CONFLICT: reload before saving")
-        allowed = (set(old) | {"model_profiles", "action_uses_character", "management_require_key"}) - {"schema_version", "revision", "runtime"}
+        allowed = (set(old) | {"model_profiles", "action_uses_character", "management_require_key", "image_gen", "image_permissions"}) - {"schema_version", "revision", "runtime"}
         if not isinstance(changes, dict) or set(changes) - allowed:
             raise ValueError("Unsupported configuration fields")
         new = merge(old, changes)

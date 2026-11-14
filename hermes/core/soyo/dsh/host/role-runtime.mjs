@@ -9,6 +9,8 @@
 // The model sees only the tools exposed by the current binding.  A prompt or
 // a QQ message can describe a permission, but neither can create one.
 
+import { imageMayGenerate } from './image-policy.mjs';
+
 const ADMIN_ACTIONS = new Set([
   'set_group_ban', 'set_group_kick', 'set_group_admin', 'set_group_card',
   'set_group_name', 'set_group_leave', '_del_group_notice',
@@ -40,9 +42,41 @@ export const HOST_TOOL_NAMES = new Set([
 export const CHARACTER_TOOL_NAMES = new Set([
   'soyo_think', 'soyo_action_brain', 'soyo_action_status', 'soyo_action_message', 'soyo_action_stop',
   'soyo_consult', 'soyo_development_decide', 'soyo_request_help', 'soyo_external_request', 'read_image',
-  'soyo_attach_image', 'soyo_recent_images',
+  'soyo_attach_image', 'soyo_recent_images', 'soyo_draw_image', 'soyo_image_status',
+  'soyo_image_collect', 'soyo_image_shelf',
+  'soyo_recall_images',
 ]);
 export const dualMode = config => config.brain_mode === 'character-action';
+
+/**
+ * Tools the character uses herself on her own reply: seeing, attaching and
+ * drawing. The legacy classifier remains for callers; imageToolVisible below
+ * separates drawing, scene references, attachment and the owner's private shelf.
+ */
+const OWNER_PRIVATE_IMAGE_TOOLS = new Set([
+  'soyo_attach_image', 'soyo_recent_images', 'soyo_draw_image', 'soyo_image_status',
+  'soyo_image_collect', 'soyo_image_shelf',
+]);
+export const ownerPrivateImageTool = name => OWNER_PRIVATE_IMAGE_TOOLS.has(name);
+
+/**
+ * The character draws for her owner, and her owner is the same person in a
+ * private chat and in a group that the deployment explicitly binds to them.
+ * Restricting drawing to the private lane made a group request look impossible
+ * to fulfil, so she delegated it, and the delegate came back empty.
+ */
+export const ownerImageClass = sessionClass => sessionClass === 'owner_private' || sessionClass === 'owner_group';
+const IMAGE_RUNTIME_TOOLS = new Set([...OWNER_PRIVATE_IMAGE_TOOLS, 'soyo_recall_images']);
+function imageToolVisible(name, binding) {
+  if (name === 'soyo_draw_image') return hasCapability(binding, 'images.generate') && !binding.internal;
+  if (name === 'soyo_image_status' || name === 'soyo_recall_images')
+    return !binding.internal || binding.owner_continuation || binding.task_continuation;
+  if (name === 'soyo_attach_image' || name === 'soyo_recent_images')
+    return binding.lane !== 'action' && (ownerImageClass(binding.session_class) || hasCapability(binding, 'images.attach')) &&
+      (!binding.internal || binding.owner_continuation || binding.task_continuation);
+  return ownerImageClass(binding.session_class) && binding.lane !== 'action' &&
+    (!binding.internal || binding.owner_continuation);
+}
 
 const INTERNAL_READ_ACTIONS = new Set(['recall', 'cognition_read', 'cognition_prepare', 'cognition_status']);
 const hasCapability = (binding, name) => binding?.capabilities instanceof Set
@@ -70,6 +104,8 @@ export const ownerGroupOf = (config, envelope) => envelope?.message_type === 'gr
 export const ownerActorOf = (config, envelope) => privateOwnerOf(config, envelope) || ownerGroupOf(config, envelope);
 
 function toolVisible(name, binding) {
+  if (IMAGE_RUNTIME_TOOLS.has(name)) return imageToolVisible(name, binding);
+  if (name === 'read_image') return !binding.cognition_only && hasCapability(binding, 'memory.recall');
   if (binding.internal && !binding.owner_continuation && !binding.task_continuation) return name === 'soyo_think' || name === 'soyo_memory' ||
     (binding.note_delivery && (name === 'pass_note' || name === 'leave_note'));
   if (name === 'soyo_think' || name === 'soyo_memory' || name === 'soyo_qq_action' || name === 'soyo_qq_read') return true;
@@ -83,8 +119,8 @@ function toolVisible(name, binding) {
   if (name === 'soyo_peer_ask' || name === 'soyo_review_candidate' || name === 'soyo_review_status')
     return hasCapability(binding, 'gpt.review') && hasCapability(binding, 'host.root');
   if (name === 'pass_note') return binding.session_class === 'owner_private';
-  if (name === 'soyo_attach_image' || name === 'soyo_recent_images')
-    return binding.session_class === 'owner_private' &&
+  if (ownerPrivateImageTool(name))
+    return ownerImageClass(binding.session_class) &&
       (!binding.internal || binding.owner_continuation) && binding.lane !== 'action';
   if (name === 'leave_note') return binding.session_class !== 'owner_private';
   if (HOST_TOOL_NAMES.has(name)) return hasCapability(binding, 'host.root');
@@ -95,6 +131,8 @@ function toolVisible(name, binding) {
 
 function capabilities(config, envelope, internal = false, ownerContinuation = false) {
   const result = new Set(['memory.recall', 'qq.read']);
+  if (imageMayGenerate(config, { owner: ownerActorOf(config, envelope), envelope })) result.add('images.attach');
+  if (imageMayGenerate(config, { owner: ownerActorOf(config, envelope), envelope, internal })) result.add('images.generate');
   if (dualMode(config) && (privateOwnerOf(config, envelope) || ownerGroupOf(config, envelope))) result.add('action.delegate');
   if (privateOwnerOf(config, envelope) && (!internal || ownerContinuation)) {
     result.add('memory.write');
@@ -184,10 +222,7 @@ export class SoyoRoleRuntime {
         : name === 'soyo_development_decide' ? state.capabilities.has('host.root') && state.capabilities.has('gpt.review')
           : name === 'soyo_request_help' ? state.binding.session_class === 'public' && !state.binding.internal && !state.binding.task_continuation
           : name === 'soyo_external_request' ? state.binding.session_class === 'owner_private'
-          : name === 'soyo_attach_image' ? state.binding.session_class === 'owner_private' &&
-              (!state.binding.internal || state.binding.owner_continuation) && state.binding.lane !== 'action'
-          : name === 'soyo_recent_images' ? state.binding.session_class === 'owner_private' &&
-              (!state.binding.internal || state.binding.owner_continuation) && state.binding.lane !== 'action'
+           : IMAGE_RUNTIME_TOOLS.has(name) ? imageToolVisible(name, state.binding)
           : true));
       // A public turn may still use its scene's bounded QQ/read tools, but a
       // request originating outside the owner lane must not jump straight into
@@ -211,8 +246,7 @@ export class SoyoRoleRuntime {
        ] : []),
       ...(state.binding.session_class === 'public' && !state.binding.internal ? ['soyo_request_help'] : []),
       ...(state.binding.session_class === 'owner_private' && !state.binding.internal ? ['soyo_external_request'] : []),
-      ...(state.binding.session_class === 'owner_private' && (!state.binding.internal || state.binding.owner_continuation) &&
-        state.lane !== 'action' ? ['soyo_attach_image', 'soyo_recent_images'] : []),
+       ...[...IMAGE_RUNTIME_TOOLS].filter(name => imageToolVisible(name, state.binding)),
       ...(state.capabilities.has('schedule.manage') ? [
         'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete',
       ] : []),
@@ -223,6 +257,7 @@ export class SoyoRoleRuntime {
   executionTools(binding) {
     if (binding.cognition_only) return new Set(['soyo_memory']);
     const candidates = ['soyo_memory', 'soyo_qq_action', 'soyo_qq_read', 'soyo_live2d', 'soyo_peer_ask', 'soyo_review_candidate', 'soyo_review_status', 'pass_note', 'leave_note',
+      'soyo_draw_image', 'soyo_image_status', 'soyo_recall_images',
       ...READ_TOOLS, ...OWNER_ONLY_TOOLS, ...HOST_TOOL_NAMES,
       'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete'];
     return new Set(candidates.filter(name => toolVisible(name, binding)));

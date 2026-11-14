@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 
 from soyo.platform import (bootstrap_directory, directory_link, file_lock, is_link,
@@ -17,6 +18,66 @@ from soyo.platform import (bootstrap_directory, directory_link, file_lock, is_li
 from .config import atomic_json, executable, initialize, metadata, project_root, read_json, venv_python
 
 PLUGINS = {"@soyo/dsh-host-boundary": "host", "@soyo/dsh-asuna-ui": "asuna-ui", "@soyo/dsh-dashboard": "dashboard"}
+PI_AI_PACKAGE = "@earendil-works/pi-ai"
+PI_AI_VERSION = "1.1.0"
+PI_AI_PATCH_ID = "responses-compat-v2"
+
+# The pinned pi-ai release already stops parsing partial tool JSON on every
+# delta. Some OpenAI-compatible gateways omit `arguments` on the terminal
+# function_call_arguments.done event, however. Keep the accumulated delta and
+# let the terminal event close the tool call instead of calling startsWith on
+# undefined. This is applied to the immutable native closure at build/select
+# time, never to an arbitrary user-installed package.
+_PI_AI_DONE_OLD = """            const previousPartialJson = slot.block.partialJson;
+            slot.block.partialJson = event.arguments;
+            slot.block.arguments = parseStreamingJson(slot.block.partialJson);
+            if (event.arguments.startsWith(previousPartialJson)) {
+                const delta = event.arguments.slice(previousPartialJson.length);"""
+_PI_AI_DONE_NEW = """            const previousPartialJson = slot.block.partialJson;
+            const finalArguments = typeof event.arguments === "string" ? event.arguments : previousPartialJson;
+            slot.block.partialJson = finalArguments;
+            slot.block.arguments = parseStreamingJson(finalArguments);
+            if (finalArguments.startsWith(previousPartialJson)) {
+                const delta = finalArguments.slice(previousPartialJson.length);"""
+_PI_AI_DONE_MID = """            const previousPartialJson = slot.block.partialJson;
+            const finalArguments = typeof event.arguments === \"string\" ? event.arguments : previousPartialJson;
+            slot.block.partialJson = finalArguments;
+            slot.block.arguments = parseStreamingJson(finalArguments);
+            if (finalArguments.startsWith(previousPartialJson)) {
+                const delta = event.arguments.slice(previousPartialJson.length);"""
+
+# The OpenAI SDK intentionally presents connection failures as a short public
+# message and keeps the original exception in `cause`. The pi-ai provider
+# currently discards that cause before the DSH adapter can classify/log it.
+# Preserve only a bounded, redacted cause message in the adapter-visible error;
+# never ship a stack, request body, authorization header or URL.
+_PI_AI_ERROR_OLD = """            const errorMessage = formatProviderError(normalizeProviderError(error), `${model.provider === \"openai\" ? \"OpenAI\" : model.provider} API error`);
+            // Sign in with ChatGPT shares the subscription's usage limit with other apps.
+            output.errorMessage = errorMessage.includes(\"subscription_sharing_usage_limit_exceeded\")
+                ? `${errorMessage}\\nCheck your ChatGPT usage: ${CHATGPT_USAGE_URL}`
+                : errorMessage;"""
+_PI_AI_ERROR_NEW = """            const errorMessage = formatProviderError(normalizeProviderError(error), `${model.provider === \"openai\" ? \"OpenAI\" : model.provider} API error`);
+            const causeParts = [];
+            const seenCauses = new Set();
+            let cause = error?.cause;
+            for (let depth = 0; depth < 4 && cause && !seenCauses.has(cause); depth++) {
+                seenCauses.add(cause);
+                try {
+                    const message = String(cause?.message ?? cause).replace(/https?:\\/\\S+|Bearer\\s+\\S+|sk-[A-Za-z0-9_-]{12,}/g, '<redacted>').slice(0, 500);
+                    if (message) causeParts.push(message);
+                    cause = cause?.cause;
+                } catch {
+                    break;
+                }
+            }
+            const causeMessage = causeParts.join(': ');
+            const diagnosticErrorMessage = errorMessage === 'Connection error.' && causeMessage && causeMessage !== errorMessage
+                ? `${errorMessage}: ${causeMessage}`
+                : errorMessage;
+            // Sign in with ChatGPT shares the subscription's usage limit with other apps.
+            output.errorMessage = diagnosticErrorMessage.includes(\"subscription_sharing_usage_limit_exceeded\")
+                ? `${diagnosticErrorMessage}\\nCheck your ChatGPT usage: ${CHATGPT_USAGE_URL}`
+                : diagnosticErrorMessage;"""
 
 
 def run(argv, *, cwd=None, env=None):
@@ -24,6 +85,171 @@ def run(argv, *, cwd=None, env=None):
     result = subprocess.run([str(x) for x in argv], cwd=cwd, env=env, check=False)
     if result.returncode:
         raise RuntimeError("Installation step failed (exit " + str(result.returncode) + "); prior runtime retained")
+
+
+def patch_pi_ai_response_source(text):
+    """Make the pinned Responses stream tolerant of omitted terminal arguments."""
+    if _PI_AI_DONE_NEW in text:
+        return text
+    if _PI_AI_DONE_MID in text:
+        return text.replace(_PI_AI_DONE_MID, _PI_AI_DONE_NEW, 1)
+    if _PI_AI_DONE_OLD not in text:
+        raise ValueError("Pinned pi-ai Responses parser shape changed; refuse an unreviewed patch")
+    return text.replace(_PI_AI_DONE_OLD, _PI_AI_DONE_NEW, 1)
+
+
+def patch_pi_ai_error_source(text):
+    """Keep a bounded, redacted provider cause in Responses errors."""
+    if _PI_AI_ERROR_NEW in text:
+        return text
+    if _PI_AI_ERROR_OLD not in text:
+        raise ValueError("Pinned pi-ai Responses error shape changed; refuse an unreviewed patch")
+    return text.replace(_PI_AI_ERROR_OLD, _PI_AI_ERROR_NEW, 1)
+
+
+def _prepare_pi_ai_package_patch(package):
+    """Validate and prepare every file before mutating this package."""
+    package = Path(package).resolve(strict=True)
+    manifest = json.loads((package / "package.json").read_text(encoding="utf-8"))
+    if manifest.get("name") != PI_AI_PACKAGE or manifest.get("version") != PI_AI_VERSION:
+        raise ValueError("Unsupported pi-ai package for the reviewed Responses compatibility patch")
+    stream_target = package / "dist/api/openai-responses-shared.js"
+    stream_source = stream_target.read_text(encoding="utf-8")
+    stream_patched = patch_pi_ai_response_source(stream_source)
+    error_target = package / "dist/api/openai-responses.js"
+    error_source = error_target.read_text(encoding="utf-8")
+    error_patched = patch_pi_ai_error_source(error_source)
+    return manifest["version"], [(stream_target, stream_source, stream_patched),
+                                 (error_target, error_source, error_patched)]
+
+
+def _apply_pi_ai_package_patch(version, files):
+    for target, source, patched in files:
+        if patched != source:
+            # pnpm can hardlink an artifact to another immutable runtime/store.
+            # Replace this directory entry instead of overwriting that shared
+            # inode, which would silently patch the rollback runtime as well.
+            fd, temporary = tempfile.mkstemp(prefix='.pi-ai-', dir=target.parent)
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
+                    stream.write(patched); stream.flush(); os.fsync(stream.fileno())
+                os.chmod(temporary, target.stat().st_mode & 0o777)
+                os.replace(temporary, target)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+    return {"package": PI_AI_PACKAGE, "version": version,
+            "changed": any(patched != source for _target, source, patched in files),
+            "files": {target.name: patched != source for target, source, patched in files}}
+
+
+def patch_pi_ai_package(package):
+    """Patch one already materialized, reviewed pi-ai package directory."""
+    version, files = _prepare_pi_ai_package_patch(package)
+    return _apply_pi_ai_package_patch(version, files)
+
+
+def locate_pi_ai_package(modules):
+    """Find the one pinned pi-ai package in a pnpm closure or linked reuse."""
+    modules = Path(modules)
+    candidates = []
+    direct = modules / PI_AI_PACKAGE
+    if direct.exists() or is_link(direct):
+        candidates.append(direct)
+    nested = modules / "@deepseek-ai/dsh-llm-pi-ai/node_modules" / PI_AI_PACKAGE
+    if nested.exists() or is_link(nested):
+        candidates.append(nested)
+    pnpm = modules / ".pnpm"
+    if pnpm.is_dir():
+        candidates.extend(pnpm.glob("*/node_modules/" + PI_AI_PACKAGE))
+    resolved_candidates = {}
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+            manifest = json.loads((resolved / "package.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if manifest.get("name") == PI_AI_PACKAGE:
+            resolved_candidates.setdefault(str(resolved), []).append(candidate)
+    if not resolved_candidates:
+        raise ValueError("Native closure is missing " + PI_AI_PACKAGE)
+    # For reuse isolation prefer a logical linked dependency path. Materialize
+    # that path copies only the new runtime's owning package chain; choosing the
+    # physical store copy here would mutate the previous immutable runtime.
+    all_candidates = [candidate for candidates in resolved_candidates.values() for candidate in candidates]
+    linked = [candidate for candidate in all_candidates
+              if any(is_link(parent) for parent in [candidate, *candidate.parents]
+                     if parent == modules or modules in parent.parents)]
+    if linked:
+        return sorted(linked, key=lambda path: str(path))[0]
+    # A pnpm alias may point to the same physical package; patching the physical
+    # copy is correct only for a newly built closure, never for reuse isolation.
+    real = [candidate for candidate in all_candidates if not is_link(candidate)]
+    return sorted(real or all_candidates, key=lambda path: str(path))[0]
+
+
+def _materialize_link_path(root, path):
+    """Own every link on a dependency path before modifying its leaf."""
+    root = Path(root).resolve(strict=True)
+    path = Path(path)
+    parts = path.relative_to(root).parts
+    current = root
+    for part in parts:
+        current = current / part
+        if not is_link(current):
+            continue
+        source = current.resolve(strict=True)
+        if not source.is_dir():
+            raise ValueError("Linked native dependency is not a directory")
+        remove_directory_link(current)
+        shutil.copytree(source, current, symlinks=True)
+    return current
+
+
+def patch_pi_ai_runtime(modules, *, isolate=False):
+    """Apply the reviewed patch to exactly pi-ai 1.1.0 in a native closure.
+
+    Reused runtimes link packages back to an older immutable build. In that
+    case materialize only pi-ai into the new runtime before patching, so a
+    rebuild never mutates the previous selected runtime in place.
+    """
+    modules = Path(modules)
+    package = locate_pi_ai_package(modules)
+    if isolate:
+        package = _materialize_link_path(modules, package)
+    package = package.resolve(strict=True)
+    package.relative_to(modules.resolve())
+    return patch_pi_ai_package(package)
+
+
+def patch_pi_ai_tree(root):
+    """Patch every materialized exact-version pi-ai copy in an exported tree."""
+    root = Path(root).resolve(strict=True)
+    packages, seen = [], set()
+    for manifest_path in root.rglob("package.json"):
+        package = manifest_path.parent
+        if package.resolve() != package:
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if manifest.get("name") != PI_AI_PACKAGE:
+            continue
+        if manifest.get("version") != PI_AI_VERSION:
+            raise ValueError("Unsupported pi-ai package for the reviewed Responses compatibility patch")
+        resolved = package.resolve(strict=True)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        packages.append(resolved)
+    if not packages:
+        raise ValueError("Native closure is missing " + PI_AI_PACKAGE)
+    # Preflight every copy first; an unsupported second artifact must not leave
+    # the exported bundle with only the first artifact patched.
+    prepared = [_prepare_pi_ai_package_patch(package) for package in sorted(packages)]
+    patches = [_apply_pi_ai_package_patch(version, files) for version, files in prepared]
+    return {"package": PI_AI_PACKAGE, "version": PI_AI_VERSION,
+            "copies": len(patches), "changed": sum(item["changed"] for item in patches)}
 
 
 def node_and_npm(config):
@@ -61,15 +287,42 @@ def native_build_key(node, config):
     spec = metadata()['runtime']
     value = {'runtime': spec, 'node': subprocess.check_output([node, '--version'], text=True).strip(),
              'platform': sys.platform, 'registry': config['registries']['npm'],
+             'native_compat_patch': PI_AI_PATCH_ID,
              'plugins': {name: json.loads((project_root() / 'hermes/core/soyo/dsh' / directory / 'package.json').read_text(encoding='utf-8'))
                          for name, directory in PLUGINS.items()}}
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def _verify_cached_native_compat(previous, home):
+    """Validate the original immutable closure, never patch a reused link."""
+    boundary = (Path(home)/'runtimes').resolve(strict=True)
+    receipt, seen = previous, set()
+    while receipt.get('native_reused_from'):
+        directory = Path(receipt['native_reused_from']).resolve(strict=True)
+        directory.relative_to(boundary)
+        if directory in seen or len(seen) >= 128:
+            raise ValueError('Native reuse cycle')
+        seen.add(directory)
+        path = directory/'INSTALL_RECEIPT.json'
+        if not path.is_file():
+            path = directory/'NATIVE_BUILD_RECEIPT.json'
+        receipt = read_json(path)
+    modules = Path(receipt['modules']).resolve(strict=True)
+    modules.relative_to(boundary)
+    if receipt.get('native_compat_patch_id') != PI_AI_PATCH_ID:
+        raise ValueError('Cached native compatibility patch differs; rebuild the pinned runtime')
+    version, files = _prepare_pi_ai_package_patch(locate_pi_ai_package(modules))
+    if any(source != patched for _target, source, patched in files):
+        raise ValueError('Cached native compatibility patch is incomplete; prior runtime retained')
+    return {'package': PI_AI_PACKAGE, 'version': version, 'changed': False,
+            'files': {target.name: False for target, _source, _patched in files}}
 
 
 def reuse_native(destination, previous, node, home):
     """New plugin snapshot over immutable prior fork packages; never npm-mix hosts."""
     origin = Path(previous['modules'])
     origin.resolve(strict=True).relative_to((Path(home) / 'runtimes').resolve())
+    compat_patch = _verify_cached_native_compat(previous, home)
     modules = destination / 'native/node_modules'
     modules.mkdir(parents=True)
     links = []
@@ -90,12 +343,16 @@ def reuse_native(destination, previous, node, home):
     for name, directory in PLUGINS.items():
         target = modules / name; target.parent.mkdir(exist_ok=True)
         shutil.copytree(project_root() / 'hermes/core/soyo/dsh' / directory, target, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    # The linked adapter resolves dependencies beside its original realpath,
+    # not beside this new logical link. Reuse only a verified, already-patched
+    # immutable closure; patching a new top-level copy would not affect it.
     spec = metadata()['runtime']
     manifest = json.loads((modules / spec['dsh_package'] / 'package.json').read_text(encoding='utf-8'))
     entry = modules / spec['dsh_package'] / manifest['bin']['dsh']
     if not entry.is_file(): raise ValueError('Cached native CLI is missing')
     return {key: previous[key] for key in ('package_manager', 'upstream_commit', 'upstream_lock_sha256', 'deployment_roots', 'deployment_lock_sha256')} | {
-        'node': node, 'modules': str(modules), 'cli': str(entry), 'native_reused_from': previous['directory']}
+        'node': node, 'modules': str(modules), 'cli': str(entry), 'native_reused_from': previous['directory'],
+        'native_compat_patch_id': PI_AI_PATCH_ID, 'native_compat_patches': [compat_patch]}
 
 
 def native_cache(home, previous, key):
@@ -233,6 +490,7 @@ def _build_native(destination, config, node, npm):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(project_root() / "hermes/core/soyo/dsh" / directory, target,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    compat_patch = patch_pi_ai_runtime(modules)
     for name in [spec["dsh_package"], "@deepseek-ai/dsh-web-app", *spec["inline_packages"]]:
         data = json.loads((modules / name / "package.json").read_text(encoding="utf-8"))
         if data.get("version") != spec["dsh_version"]:
@@ -244,7 +502,8 @@ def _build_native(destination, config, node, npm):
         raise ValueError("Built native CLI is missing")
     return {"node": node, "cli": str(cli), "modules": str(modules), "package_manager": manager,
             "upstream_commit": actual, "upstream_lock_sha256": original_lock, "deployment_roots": sorted(roots),
-            "deployment_lock_sha256": hashlib.sha256((source / "pnpm-lock.yaml").read_bytes()).hexdigest()}
+            "deployment_lock_sha256": hashlib.sha256((source / "pnpm-lock.yaml").read_bytes()).hexdigest(),
+            "native_compat_patch_id": PI_AI_PATCH_ID, "native_compat_patches": [compat_patch]}
 
 
 def select_runtime(home, receipt):

@@ -78,7 +78,7 @@ def main() -> None:
     request = json.loads(sys.stdin.buffer.read(128 * 1024))
     media = request.get("media") or []
     results = []
-    for item in media[:8]:
+    for source_index, item in enumerate(media[:8]):
         if not isinstance(item, dict):
             continue
         kind = str(item.get("kind") or "").lower()
@@ -97,11 +97,11 @@ def main() -> None:
             if normalized_kind in {"record", "video"}:
                 audio_path = result["path"] if normalized_kind == "record" else video_audio(result["path"], Path(config["media_root"]))
                 result["transcript"] = transcribe(audio_path, config).get("text", "") if audio_path else ""
-            results.append({**result, "ref": item.get("ref"), "metadata": item.get("metadata") or {},
+            results.append({**result, "source_index": source_index, "ref": item.get("ref"), "metadata": item.get("metadata") or {},
                             "label": item.get("label") or ""})
             if normalized_kind == "video":
                 for frame in video_frames(result["path"], Path(config["media_root"])):
-                    results.append({"ok": True, "kind": "image", "path": frame, "media_type": "image/jpeg",
+                    results.append({"ok": True, "source_index": source_index, "kind": "image", "path": frame, "media_type": "image/jpeg",
                                     "bytes": Path(frame).stat().st_size, "name": Path(frame).name,
                                     "sha256": __import__('hashlib').sha256(Path(frame).read_bytes()).hexdigest()})
     print(json.dumps({"items": results}, ensure_ascii=False))

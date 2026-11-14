@@ -12,6 +12,12 @@ from soyo.app import config
 ROOT = Path(__file__).resolve().parents[4]
 
 
+def test_source_package_version_matches_the_product_version():
+    import tomllib
+    package = tomllib.loads((ROOT/'hermes/core/pyproject.toml').read_text(encoding='utf-8'))
+    assert package['project']['version'] == (ROOT/'VERSION').read_text(encoding='utf-8').strip()
+
+
 def test_default_bot_name_does_not_replace_a_users_chosen_identity(tmp_path):
     home = tmp_path / 'instance'; value = config.initialize(home)
     assert value['character_name'] == 'Bot'

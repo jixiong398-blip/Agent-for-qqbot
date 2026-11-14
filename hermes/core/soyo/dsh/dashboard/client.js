@@ -264,7 +264,10 @@ select.bqs-control { appearance: none; padding-right: 34px; cursor: pointer; }
         if (replace) {
           const c = value.config;
           const next = { character_name: c.character_name || 'Bot', action_uses_character: c.action_uses_character,
-            host_permission_mode: c.host_permission_mode, time_zone: c.time_zone || '',
+             host_permission_mode: c.host_permission_mode, time_zone: c.time_zone || '',
+             image_gen: { base_url: '', model: '', size: '', timeout_ms: 300000, ...c.image_gen, api_key: '' },
+             image_permissions: { enabled: true, allow_group_members: false, group_ids: [], ...c.image_permissions },
+             imageGroupText: (c.image_permissions?.group_ids || []).join(', '),
             models: { character: routeDraft(c.models.character), action: routeDraft(c.models.action) }, onebot: { ...c.onebot, token: '' } };
           const soul = value.persona.text || '# Bot\n\n你是 Bot。名字、性格、语言和背景由使用者自行定义；没有固定人物设定。\n不知道时说明不知道；以真实工具结果和平台回执核对完成状态。';
           setDraft(next); setText(soul); setAccount(c.onebot.account_id || value.napcat.accounts[0]?.account_id || '');
@@ -298,7 +301,8 @@ select.bqs-control { appearance: none; padding-right: 34px; cursor: pointer; }
       };
       const set = (key, value) => setDraft(old => ({ ...old, [key]: value }));
       const laneSet = (lane, key, value) => setDraft(old => ({ ...old, models: { ...old.models, [lane]: { ...old.models[lane], [key]: value } } }));
-      const onebotSet = (key, value) => setDraft(old => ({ ...old, onebot: { ...old.onebot, [key]: value } }));
+       const onebotSet = (key, value) => setDraft(old => ({ ...old, onebot: { ...old.onebot, [key]: value } }));
+       const imageSet = (section, key, value) => setDraft(old => ({ ...old, [section]: { ...old[section], [key]: value } }));
       const button = (label, action, { disabled = false, variant = 'default', glyph, aria = label } = {}) => h('button', {
         type: 'button', className: 'bqs-button', 'data-variant': variant, 'aria-label': aria, disabled: busy || pending || disabled,
         onClick: () => run(action),
@@ -344,7 +348,10 @@ select.bqs-control { appearance: none; padding-right: 34px; cursor: pointer; }
           try { model.reasoning_efforts = JSON.parse(mappingText || '{}'); } catch { throw Error('思考档位映射须为有效 JSON'); }
           models[lane] = model;
         }
-        const changes = { ...draft, models }; if (modelProfile) delete changes.models;
+         const changes = { ...draft, models }; if (modelProfile) delete changes.models;
+         delete changes.imageGroupText;
+         changes.image_permissions = { ...draft.image_permissions,
+           group_ids: [...new Set(draft.imageGroupText.split(/[,，\s]+/).filter(Boolean))] };
         const accepted = await call('save', { revision: sample.config.revision, changes, persona: text, persona_digest: sample.persona.digest,
           ...(modelProfile ? { use_model_profile: modelProfile } : {}), ...(saveProfileName.trim() ? { save_model_profile: saveProfileName.trim() } : {}) });
         setSample(old => ({ ...old, operation: accepted })); setNotice('配置已排队；空闲后应用，原生 DSH 会自动重连。');
@@ -360,7 +367,23 @@ select.bqs-control { appearance: none; padding-right: 34px; cursor: pointer; }
             draft.action_uses_character && h('div', { className: 'bqs-shared' }, icon('link'), h('div', {},
               h('div', { className: 'bqs-row' }, pill('角色脑', 'purple'), icon('arrow', 13), pill('行动脑', 'blue')),
               h('span', { className: 'bqs-hint', style: { marginTop: 5 } }, draft.models.character.name || '配置角色脑后，行动脑自动复用其供应商和模型。'))))),
-          !draft.action_uses_character && lane('action')),
+           !draft.action_uses_character && lane('action')),
+         card('可选绘图扩展', h('div', { className: 'bqs-stack' },
+           toggle('启用绘图扩展', draft.image_permissions.enabled, v => imageSet('image_permissions', 'enabled', v), {
+             hint: '角色脑和行动脑均可使用；必须先配置独立绘图渠道。关闭不删除已保存的凭据。' }),
+           h('div', { className: 'bqs-grid' },
+             field('绘图 API 地址', draft.image_gen.base_url, v => imageSet('image_gen', 'base_url', v), { type: 'url', placeholder: 'https://api.example.com/v1' }),
+             field('绘图模型 ID', draft.image_gen.model, v => imageSet('image_gen', 'model', v), { code: true }),
+             field('绘图 API Key（留空保留）', draft.image_gen.api_key, v => imageSet('image_gen', 'api_key', v), {
+               type: 'password', placeholder: sample.config.image_gen?.api_key_configured ? '已安全保存 · 不回显' : '独立绘图 Key',
+               hint: '不借用角色脑或行动脑的 Key；更换地址时必须重新输入绘图 Key。' }),
+             field('绘图默认尺寸', draft.image_gen.size, v => imageSet('image_gen', 'size', v), { placeholder: '1024x1024' }),
+             field('绘图超时（毫秒）', draft.image_gen.timeout_ms, v => imageSet('image_gen', 'timeout_ms', v), { type: 'number', hint: '默认 300000；上限 600000。未知结果不自动重试付费请求。' })),
+           toggle('允许群成员请求绘图', draft.image_permissions.allow_group_members, v => imageSet('image_permissions', 'allow_group_members', v), {
+             hint: '会消耗你的绘图额度。只开放绘图及当前场景参考图，不开放主机工具、主人收藏或其他场景。' }),
+           draft.image_permissions.allow_group_members && field('绘图群白名单', draft.imageGroupText, v => set('imageGroupText', v), {
+             hint: '群号以逗号分隔；留空代表所有已启用的 QQ 群。入站和 @ 唤醒规则不变。' })), { glyph: 'shield',
+           caption: '这是额外配置的能力，不代表未配置时就能出图；只有真实图片与发送回执才算成功。' }),
         card('方案与权限', h('div', { className: 'bqs-grid' },
           field('随本次应用另存模型方案（可留空）', saveProfileName, setSaveProfileName, { display: '另存为模型方案', placeholder: '例如：日常对话', hint: '可选。下次可直接切换，无需重复填写。' }),
           field('主机工具权限', draft.host_permission_mode, v => set('host_permission_mode', v), { options: [

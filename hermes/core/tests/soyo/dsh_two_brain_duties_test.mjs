@@ -37,10 +37,10 @@ test('owner executor inherits root work and never delegates to a third brain', (
   for (const name of ['soyo_think', 'soyo_action_brain', 'soyo_consult']) assert.match(runtime.guard({ agent, name }), /CAPABILITY_DENIED/);
 });
 
-test('role and executor tools intersect only at the explicitly shared image read', () => {
+test('role and executor share only image read/recall and the optional drawing extension', () => {
   const character = bound(owner), action = bound(owner, 'action');
   const overlap = [...character.runtime.exposed(character.agent)].filter(name => action.runtime.exposed(action.agent).has(name));
-  assert.deepEqual(overlap, ['read_image']);
+  assert.deepEqual(overlap.sort(), ['read_image','soyo_draw_image','soyo_image_status','soyo_recall_images'].sort());
 });
 
 test('public execution cannot inherit root or private management from message text', () => {

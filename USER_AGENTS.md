@@ -1,7 +1,7 @@
 # Agent-for-qqbot：用户 AI 操作指南
 
 先读 [README.md](README.md)、[MIGRATION.md](MIGRATION.md) 与
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。当前是未发布的 **1.0.0** 原生 DSH 主线；旧 Hermes / 0.x 停更。
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。当前是未发布的 **1.1.3 候选**，已发布版本为 1.1.2；旧 Hermes / 0.x 停更。
 
 ## 入口与数据边界
 
@@ -34,9 +34,11 @@ Windows 通过相应 bat 或 bootstrap.ps1，Linux 通过 sh wrapper / Python 3.
 - 不在没有隔离后端时直接运行行动脑候选代码；Docker 必须使用显式镜像 digest。
 - 不把旧记录、回合结束、建议、操作已接受或配置已保存当成平台效果/验收完成。
 - 不把 venv、node_modules、NapCat 账号配置、数据库、日志、knowledge vault 或私有 home 打进源码包。
+- 绘图凭据独立于双脑模型，默认仅主人；失败或超时可能已计费，不自动重试。开放群绘图不扩大主机或其他场景的数据权限。
+- QQ 阶段正文必须来自已成功提交的 assistant 消息；不要将 reasoning、工具结果或供应商错误当作可发送正文。
 
 ## 当前验收状态
 
 新授权已覆盖此前仅静态检查的约束；Windows / WSL 独立实例安装、原生 Web、双脑本地模型回合和重启恢复已验证。
 真实 QQ、外部发送和用户原有部署不在此次验证范围。具体通过项和未验证项以 MIGRATION 为准。
-GitHub 仓库已改名为 Agent-for-qqbot；当前仅 README 获得文档更新授权，整套源码没有提交、推送、打 tag、Release 或部署授权。
+仓库已发布 1.1.2；1.1.3 在准备中。后续提交、推送、tag、Release 和部署仍需使用者明确授权，不能由安装或测试隐式触发。

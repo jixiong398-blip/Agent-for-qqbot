@@ -118,3 +118,11 @@ def test_render_pins_browser_authority_to_connection_not_advertised_url(tmp_path
     names = {row['name'] for row in qq_preset['plugins'][0]['config']}
     assert names == {'@deepseek-ai/dsh-compaction-basic', '@deepseek-ai/dsh-compaction-tool-result-pruner'}
     assert not any('dsh-tool-bash' in name or 'dsh-tool-fs' in name or 'dsh-tool-subagent' in name for name in names)
+    # A generous default is scaled down for this deliberately small model.
+    basic = next(row for row in qq_preset['plugins'][0]['config']
+                 if row['name'] == '@deepseek-ai/dsh-compaction-basic')
+    assert basic['config']['maxTokens'] == 65536
+    policy = basic['config']['modelPolicies'][0]
+    assert policy['maxTokens'] == 1024
+    assert policy['headroomTokens'] == 1792
+    assert basic['config']['auto'] is True

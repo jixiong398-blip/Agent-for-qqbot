@@ -72,6 +72,7 @@ def initialize(db):
         CREATE TABLE IF NOT EXISTS facts (
             scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
             source TEXT NOT NULL, PRIMARY KEY(scope,key));
+        CREATE INDEX IF NOT EXISTS idx_messages_route_seq ON messages(route,seq);
         CREATE TABLE IF NOT EXISTS turns (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             route TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '',
@@ -469,6 +470,12 @@ def call(config, args):
                 db.execute("INSERT OR REPLACE INTO message_flags(route,event_id,flag,value,created_at) VALUES(?,?,?,?,?)",
                            ("qq-group-" + str(raw["group_id"]), str(raw["message_id"]), "recalled", "1", now))
             return {"state": "platform_event_recorded", "event_type": event_type}
+        if action == 'image_sources':
+            message_id = str(args.get('message_id') or '')[:160]
+            if not message_id and not query.strip():
+                raise ValueError('An explicit image source message or query is required')
+            return {'state': 'observed', 'sources': native_recall.media_sources(
+                db, domain_routes, message_id=message_id, query=query)}
         if action == "attach_forward":
             event_id = str(args.get("event_id") or "")[:160]
             value = args.get("forward_context") if isinstance(args.get("forward_context"), dict) else {}
@@ -862,6 +869,9 @@ def call(config, args):
                 db, config, route, context_query, now,
                 excluded_events={current_event},
             )
+            result['recalled_media'] = native_recall.media_sources(db, domain_routes,
+                source_seqs=[seq for item in recall['candidates'] if item.get('media_sources')
+                             for seq in item.get('source_seqs', [])])
             result["memory_surface"] = native_recall.build_surface(
                 recall,
                 recent=surface_recent,

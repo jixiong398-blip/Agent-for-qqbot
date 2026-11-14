@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Loader-only synthetic inference over the real Soyo DualBrain/native log seam.
+// Stage this loader beside soyo-plugins/ containing the current soyo/dsh tree;
+// its relative imports describe that private fixture layout, not source layout.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';

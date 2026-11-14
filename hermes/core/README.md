@@ -1,6 +1,6 @@
 # Agent-for-qqbot — 原生 DSH 源码
 
-当前是 1.0 原生 DSH QQ Agent 主线的未发布源码候选；旧 Hermes / 0.x 停更。
+当前是 1.1.3 原生 DSH QQ Agent 发布候选，尚未发布；已发布版本为 1.1.2，旧 Hermes / 0.x 停更。
 安装/配置/启动重构与未验证项见 [迁移说明](../MIGRATION.md)，使用入口见 [README](../README.md)。
 
 ## 源码入口
@@ -11,7 +11,7 @@
 - `soyo/memory/`、`soyo/social/`：独立记忆与社交状态。
 - `tests/soyo/`：版本化回归与探针源码；最新实际验证范围见 [验收记录](../VALIDATION.md)。
 
-QQ 使用单 writer、final-only 和真实 receipt；群聊仅 self `@` 唤醒。
+QQ 使用单 writer、已提交正文的阶段发布和真实 receipt；reasoning、失败与截断尝试不发布，群聊仅 self `@` 唤醒。
 普通成员没有 `host.root`。公开办事请求经持久便签、独立审阅与 owner 决定，
 不因正文自称身份扩权；Hermes Gateway 不作为回退 writer。
 

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "name": "NapCatQQ",
+  "integration": "maintainer-source-only",
+  "worktree": "modules/napcat-for-self",
+  "agent_instructions_file": "modules/napcat-for-self/AGENTS.md",
+  "private_handoff_file": "NAPCAT_MAINTENANCE.md",
+  "maintenance_branch": "bot/4.18.38",
+  "original_repository": "https://github.com/NapNeko/NapCatQQ",
+  "archive_repository": "https://github.com/XingYunStar/NapCatQQ",
+  "source_tag": "v4.18.38",
+  "source_tag_object": "e0f817edf1a32d0825d433bbf9c8e9dc06b32873",
+  "source_commit": "bbd0d2aca3d470c20b33b1d4f95123335633bf26",
+  "license": "Limited Redistribution License for NapCat",
+  "license_file": "modules/napcat-for-self/LICENSE",
+  "native_implementation_sources_complete": false,
+  "historical_build_reproduced": false,
+  "runtime": {
+    "version": "4.18.38",
+    "windows_asset": "NapCat.Shell.Windows.Node.zip",
+    "windows_sha256": "b88007a373a30deefb387e7cf17911752ff900bce22c534b3da6b644f5c6d0ae",
+    "linux_asset": "NapCat.Shell.zip",
+    "linux_sha256": "735f2e633247df3ffd6e8ee8b84d7039c315b2655f5807e5f0029f93d2c30016"
+  }
+}

@@ -441,7 +441,7 @@ async def serve(config):
                             lambda: host.request("/v1/channels/qq/status"), config)
     await asyncio.to_thread(wait_transport, "DSH host",
                             lambda: host.register_routes(routes, napcat.names), config)
-    log.info("DSH QQ admission: mention-only; final-only; authorized routes=%d", len(routes))
+    log.info("DSH QQ admission: mention-only; committed-stages; authorized routes=%d", len(routes))
     with SoyoQQChannel(config=ChannelConfig(
                            config["account_id"],
                            chunk_delay_seconds=config.get("chunk_delay_seconds", 0.6),
@@ -477,7 +477,7 @@ async def serve(config):
                     health = channel.health_snapshot()
                     SoyoQQJournal.write_json(Path(config["status_file"]), {
                         "backend": "dsh", "state": "connected" if transport_connected else "connecting", "updated_at": time.time(),
-                        "mention_only": True, "final_only": True, "routes": len(channel.routes),
+                        "mention_only": True, "final_only": False, "publication_mode": "committed-stages", "routes": len(channel.routes),
                         "counters": {k: v for k, v in health.items() if k.startswith(("inbound_", "outbox_"))}})
                 except RuntimeError:
                     stop.set()

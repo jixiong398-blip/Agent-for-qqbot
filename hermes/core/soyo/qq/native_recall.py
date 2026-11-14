@@ -87,6 +87,13 @@ def _text(value: str, limit: int = MAX_CANDIDATE_CHARS) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
+def _excerpt(value, terms):
+    text = ' '.join(str(value or '').split())
+    positions = [text.casefold().find(term) for term in terms if term in text.casefold()]
+    start = max(0, min(positions) - 160) if positions else 0
+    return ('…' if start else '') + text[start:start + MAX_CANDIDATE_CHARS - (1 if start else 0)]
+
+
 def _safe_json(value, default):
     try:
         parsed = json.loads(value) if isinstance(value, str) else value
@@ -349,11 +356,12 @@ def _readable_summaries(db, domain: str, routes: list[str], terms: list[str], no
 
 
 def _readable_turns(db, routes: list[str], terms: list[str], now: float,
-                    excluded_events: set[str]) -> list[dict]:
+                     excluded_events: set[str]) -> list[dict]:
     marks = ",".join("?" for _ in routes)
+    match, ranking, parameters = _search_sql('content', terms)
     rows = db.execute(
         "SELECT id,route,role,sender,event_id,content,occurred_at FROM turns WHERE route IN (" + marks + ") "
-        "ORDER BY occurred_at DESC,id DESC LIMIT 128", routes).fetchall()
+        + match + " ORDER BY " + ranking + "occurred_at DESC,id DESC LIMIT 128", (*routes, *parameters)).fetchall()
     result = []
     for row in rows:
         if str(row["event_id"] or "") in excluded_events:
@@ -367,7 +375,7 @@ def _readable_turns(db, routes: list[str], terms: list[str], now: float,
             continue
         score = (0.64 * lexical if terms else 0.0) + 0.36 * _recency(row["occurred_at"], now, 14.0)
         result.append(_candidate(
-            "turn", "turn:" + str(row["id"]), kind=row["role"], key=row["event_id"], text=row["content"],
+            "turn", "turn:" + str(row["id"]), kind=row["role"], key=row["event_id"], text=_excerpt(row['content'], terms),
             scope=row["route"], relevance=score, provenance="native-turn",
             source_events=[row["event_id"]], metadata={"sender": row["sender"], "occurred_at": row["occurred_at"]},
         ))
@@ -375,12 +383,13 @@ def _readable_turns(db, routes: list[str], terms: list[str], now: float,
 
 
 def _readable_corpus(db, routes: list[str], terms: list[str], now: float,
-                     excluded_events: set[str]) -> list[dict]:
+                      excluded_events: set[str]) -> list[dict]:
     marks = ",".join("?" for _ in routes)
+    match, ranking, parameters = _search_sql("COALESCE(json_extract(body,'$.text'),'')", terms)
     rows = db.execute(
         "SELECT seq,route,body FROM messages WHERE route IN (" + marks + ") "
         "AND COALESCE(json_extract(body,'$.historical'),0)=0 "
-        "ORDER BY seq DESC LIMIT 256", routes).fetchall()
+        + match + " ORDER BY " + ranking + "seq DESC LIMIT 256", (*routes, *parameters)).fetchall()
     result = []
     for row in rows:
         try:
@@ -393,17 +402,77 @@ def _readable_corpus(db, routes: list[str], terms: list[str], now: float,
         if db.execute("SELECT 1 FROM message_flags WHERE route=? AND event_id=? AND flag='recalled'",
                       (row["route"], event_id)).fetchone():
             continue
-        text = _text(value.get("text"))
+        text = str(value.get('text') or '')
         lexical = _lexical(terms, text)
         if terms and lexical <= 0:
             continue
         score = (0.58 * lexical if terms else 0.0) + 0.42 * _recency(value.get("occurred_at"), now, 21.0)
-        result.append(_candidate(
-            "corpus", "message:" + str(row["seq"]), kind="episode-candidate", key=event_id, text=text,
+        candidate = _candidate(
+            "corpus", "message:" + str(row["seq"]), kind="episode-candidate", key=event_id, text=_excerpt(text, terms),
             scope=row["route"], relevance=score, provenance="native-corpus",
             source_seqs=[row["seq"]], source_events=[event_id],
             metadata={"sender": value.get("sender_id"), "occurred_at": value.get("occurred_at")},
-        ))
+        )
+        descriptors = media_descriptors(value)
+        if descriptors:
+            candidate['media_sources'] = descriptors
+        result.append(candidate)
+    return result
+
+
+def _search_sql(column, terms):
+    """Filter/rank the scoped corpus BEFORE bounding the returned row pool.
+
+    SQL fragments come only from the two fixed callers; all query text is bound.
+    A rare old source must not be hidden by a recent-only preselection.
+    """
+    if not terms:
+        return '', '', []
+    predicates = [f'instr(lower({column}),?)>0' for _ in terms]
+    match = ' AND (' + ' OR '.join(predicates) + ')'
+    score = '+'.join('CASE WHEN ' + predicate + ' THEN 1 ELSE 0 END' for predicate in predicates)
+    return match, '(' + score + ') DESC,', [*terms, *terms]
+
+
+def media_descriptors(envelope):
+    """Prompt-safe source handles; never expose signed media URLs or paths."""
+    return [{'message_id': str(envelope.get('event_id') or ''), 'media_index': index, 'kind': item['kind']}
+            for index, item in enumerate((envelope.get('media') or [])[:8])
+            if isinstance(item, dict) and item.get('kind') in {'image', 'mface'}][:4]
+
+
+def media_sources(db, routes, *, message_id='', query='', source_seqs=()):
+    marks = ','.join('?' for _ in routes)
+    clause, ranking, parameters = '', '', []
+    if message_id:
+        clause = " AND json_extract(body,'$.event_id')=?"
+        parameters = [str(message_id)[:160]]
+    elif source_seqs:
+        refs = [v for v in source_seqs if type(v) is int and v > 0][:16]
+        if not refs:
+            return []
+        clause = ' AND seq IN (' + ','.join('?' for _ in refs) + ')'
+        parameters = refs
+    elif query.strip():
+        clause, ranking, parameters = _search_sql("COALESCE(json_extract(body,'$.text'),'')", _terms(query))
+        if not clause:
+            return []
+    else:
+        return []
+    ranking = ranking if query.strip() and not message_id and not source_seqs else ''
+    rows = db.execute("SELECT route,body FROM messages WHERE route IN (" + marks + ") "
+        "AND COALESCE(json_extract(body,'$.historical'),0)=0 AND json_array_length(json_extract(body,'$.media'))>0 "
+        + clause + ' ORDER BY ' + ranking + 'seq DESC LIMIT 12', (*routes, *parameters)).fetchall()
+    result = []
+    for row in rows:
+        value = _safe_json(row['body'], {})
+        if not media_descriptors(value) or db.execute(
+            "SELECT 1 FROM message_flags WHERE route=? AND event_id=? AND flag='recalled'",
+            (row['route'], str(value.get('event_id') or ''))).fetchone():
+            continue
+        result.append({key: value.get(key) for key in ('route_id','event_id','sender_id','text','occurred_at','media')})
+        if len(result) >= 4:
+            break
     return result
 
 
@@ -517,6 +586,8 @@ def _surface_candidate(item: dict) -> dict:
         value["status"] = str(item["status"])[:32]
     if item.get("metadata"):
         value["metadata"] = _clip(item["metadata"], 600)
+    if item.get('media_sources'):
+        value['media_sources'] = item['media_sources'][:4]
     return value
 
 

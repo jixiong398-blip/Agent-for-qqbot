@@ -13,7 +13,7 @@ from . import persona
 from soyo.platform import file_lock
 
 PENDING = {'queued', 'applying'}
-EDITABLE = {'character_name', 'models', 'action_uses_character', 'onebot', 'host_permission_mode', 'time_zone'}
+EDITABLE = {'character_name', 'models', 'action_uses_character', 'onebot', 'host_permission_mode', 'time_zone', 'image_gen', 'image_permissions'}
 
 
 def ready(config):
@@ -65,6 +65,9 @@ def queue(manager, request):
         # Validate using a temporary in-memory candidate; merge secrets exactly as the real config writer does.
         from .config import merge
         candidate = merge(current, changes)
+        drawing = changes.get('image_gen', {})
+        if drawing.get('base_url', current.get('image_gen', {}).get('base_url', '')) != current.get('image_gen', {}).get('base_url', '') and not drawing.get('api_key'):
+            raise ValueError('Enter a new drawing key when changing its endpoint; old credentials are not forwarded')
         if 'models' in changes:
             candidate['routes'] = {}
         for lane, patch in changes.get('models', {}).items():
